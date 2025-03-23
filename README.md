@@ -2,6 +2,11 @@
 
 This is a Project for the Computer Science Advanced Course in 2025 at Adelaide University
 
+## Issues with Current Data Annotation Solutions
+Data annotation is necessary to train up Machine Learning Models. However, this process is extremely time-consuming and expensive. Many solutions have been made such as Amazons Mechanical Turk, however this doesn't alleviate the problem at all.
+
+## Image Annotator
+The Image Annotator is built with efficiency in mind. The incredibly fast web Flutter front end is paired with the Flask backend to serve an app powered with the incredibly fast YOLO.
 
 # Development
 
