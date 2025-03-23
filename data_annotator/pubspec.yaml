@@ -7,8 +7,11 @@ environment:
   sdk: ^3.7.2
 
 dependencies:
+  bounding_box_annotation: ^0.1.2
+  file_picker: ^9.2.1
   flutter:
     sdk: flutter
+  google_fonts: ^6.2.1
 
 dev_dependencies:
   flutter_test:
