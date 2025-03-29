@@ -1,6 +1,8 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:http/http.dart' as http;
+import 'package:dio/dio.dart';
 
 void main() {
   runApp(const MainApp());
@@ -132,22 +134,66 @@ class ClickableImage extends StatelessWidget {
   }
 }
 
-class FileUploadButton extends StatelessWidget {
-  const FileUploadButton({super.key});
+class FileUploadButton extends StatefulWidget {
+  const FileUploadButton({super.key});  
+
+
+  @override
+  State<FileUploadButton> createState() => _FileUploadButtonState();
+}
+
+class _FileUploadButtonState extends State<FileUploadButton> {
   @override
   Widget build(BuildContext context) {
     return ElevatedButton(
       child: Text('Upload Image(s)'),
       onPressed: () async {
-        var picked = await FilePicker.platform.pickFiles(
+        FilePickerResult? picked = await FilePicker.platform.pickFiles(
+          type: FileType.image,
           allowMultiple: true,
+          withData: true,
         );
 
         if (picked != null) {
-          print(picked.files.first.name);
+          uploadImages(picked.files);
         }
-        print(picked);
+        else {
+          //The user canceled the file picker
+        }
       },
     );
   }
+}
+
+Future<void> uploadImages(List<PlatformFile> files) async {
+  var dio = Dio();
+  var formData = FormData();
+
+  for (var file in files) {
+    formData.files.add(
+      MapEntry(
+        'image',
+        await MultipartFile.fromBytes(file.bytes!, filename: file.name),
+      ),
+    );
+  }
+
+  try {
+    var response = await dio.post(
+      'http://localhost:5001/upload',
+      data: formData,
+      onSendProgress: (sent, total) {
+        print('Progress: ${(sent/total * 100).toStringAsFixed(0)}%');
+      },
+    );
+    print(response.data);
+  } on DioException catch (e) {
+      print('Dio Error: ${e.message}');
+  }
+  //
+  //
+  //
+  //var request = http.MultipartRequest('POST', Uri.parse('localhost:5001/upload'));
+
+
 }
