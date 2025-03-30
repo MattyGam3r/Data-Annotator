@@ -18,11 +18,25 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 DATABASE = 'metadata.db'
 
 
+def init_db():
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+              filename TEXT NOT NULL,
+              upload_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+    ''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
 @app.route("/")
 def home():
     return jsonify({"message": "Hello from Flask!"})
 
-#def init_db():
 
 
 
@@ -33,6 +47,12 @@ def upload_image():
         #filename = werkzeug.utils.secure_filename(imagefile.filename)
         for file in imagefiles:
             file.save("./uploads/" + file.filename)
+        #Insert the image into the database
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
+        c.execute("INSERT INTO images (filename) VALUES (?)", (file.filename,))
+        conn.commit()
+        conn.close()
         response = jsonify({
             "message": "Image(s) Uploaded Successfully"
         })
@@ -41,4 +61,4 @@ def upload_image():
 
 
 if __name__ == "__main__":
-    app.run(debug = True, host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5000)

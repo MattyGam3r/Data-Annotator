@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -68,13 +70,32 @@ class HomePage extends StatelessWidget {
   }
 }
 
-class ImageViewer extends StatelessWidget {
-  const ImageViewer({
+
+class AnnotatedImage {
+  //Filepath where we can access the image
+  String filepath;
+  DateTime? uploadedDate;
+
+  AnnotatedImage(this.filepath);
+}
+//This is the area where we select, filter, and view the images in the database
+class ImageViewer extends StatefulWidget {
+  ImageViewer({
     super.key,
   });
 
+  @override
+  State<ImageViewer> createState() => _ImageViewerState();
+}
 
+class _ImageViewerState extends State<ImageViewer> {
 
+  List<AnnotatedImage>? images;
+
+  void fetchImages() {
+    
+  }
+  
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -190,10 +211,35 @@ Future<void> uploadImages(List<PlatformFile> files) async {
   } on DioException catch (e) {
       print('Dio Error: ${e.message}');
   }
-  //
-  //
-  //
-  //var request = http.MultipartRequest('POST', Uri.parse('localhost:5001/upload'));
+}
 
+Future<List<AnnotatedImage>?> fetchLatestImages() async {
+  var dio = Dio();
+  try {
+    var response = await dio.get(
+      'http://localhost:5001/',
+      options: Options(responseType: ResponseType.json),
+    );
 
+    List<AnnotatedImage> images;
+
+    if (images == null) return null;
+
+    for (var i in response.data) {
+      AnnotatedImage image = AnnotatedImage(i['filename']);
+
+      // Map the database data to our app's format
+      if (i.containsKey('uploaded_date')) {
+        var date = DateTime.parse(i['uploaded_date']);
+        image.uploadedDate = date;
+      }
+
+      // Add the image to the list
+      images.add(image);
+    }
+
+    return images;
+  } on DioException catch (e) {
+    print('Dio Error: ${e.message}');
+  }
 }
