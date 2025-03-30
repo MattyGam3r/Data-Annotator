@@ -28,10 +28,11 @@ def home():
 
 @app.route("/upload", methods = ["POST"])
 def upload_image():
-        imagefile = request.files['image']
+        imagefiles = request.files.getlist('image')
         #TODO: Get secure filename eventually
         #filename = werkzeug.utils.secure_filename(imagefile.filename)
-        imagefile.save("./uploads/" + imagefile.filename)
+        for file in imagefiles:
+            file.save("./uploads/" + file.filename)
         response = jsonify({
             "message": "Image(s) Uploaded Successfully"
         })
