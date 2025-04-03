@@ -1,4 +1,7 @@
 flask
 flask-cors
+flask-socketio
 gunicorn
 werkzeug
+flask_uploads
+flask_wtf

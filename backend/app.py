@@ -1,8 +1,9 @@
 import os
 import sqlite3
-from flask import Flask, jsonify, Response, request
+from flask import Flask, jsonify, Response, request, render_template, send_from_directory
 from flask_cors import CORS, cross_origin
 from werkzeug import utils
+
 
 app = Flask(__name__)
 cors = CORS(app, 
@@ -25,7 +26,8 @@ def init_db():
         CREATE TABLE IF NOT EXISTS images (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
               filename TEXT NOT NULL,
-              upload_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+              upload_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE (filename)
             );
     ''')
     conn.commit()
@@ -42,15 +44,15 @@ def home():
 
 @app.route("/upload", methods = ["POST"])
 def upload_image():
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
         imagefiles = request.files.getlist('image')
         #TODO: Get secure filename eventually
         #filename = werkzeug.utils.secure_filename(imagefile.filename)
         for file in imagefiles:
             file.save("./uploads/" + file.filename)
         #Insert the image into the database
-        conn = sqlite3.connect(DATABASE)
-        c = conn.cursor()
-        c.execute("INSERT INTO images (filename) VALUES (?)", (file.filename,))
+            c.execute("INSERT INTO images (filename) VALUES (?)", (file.filename,))
         conn.commit()
         conn.close()
         response = jsonify({
@@ -58,6 +60,21 @@ def upload_image():
         })
         return response
 
+#This function returns all images to the user
+@app.route("/images", methods = ["GET"])
+def get_images():
+     conn = sqlite3.connect(DATABASE)
+     c = conn.cursor()
+     c.execute("SELECT filename FROM images")
+     rows = c.fetchall()
+     data = [{"filename": row[0]} for row in rows]
+     return jsonify(data)
+
+@app.route("/uploads/<filename>", methods = ['GET'])
+def get_image(filename):
+     return send_from_directory("./uploads/", filename)
+
+     
 
 
 if __name__ == "__main__":

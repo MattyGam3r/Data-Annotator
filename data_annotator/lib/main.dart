@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:dio/dio.dart';
+import 'package:web_socket_channel/web_socket_channel.dart';
+import 'package:web_socket_channel/status.dart' as status;
 
 void main() {
   runApp(const MainApp());
@@ -217,13 +219,13 @@ Future<List<AnnotatedImage>?> fetchLatestImages() async {
   var dio = Dio();
   try {
     var response = await dio.get(
-      'http://localhost:5001/',
+      'http://localhost:5001/images',
       options: Options(responseType: ResponseType.json),
     );
 
-    List<AnnotatedImage> images;
+    List<AnnotatedImage> images = List.empty(growable: true);
 
-    if (images == null) return null;
+    if (response == null) return null;
 
     for (var i in response.data) {
       AnnotatedImage image = AnnotatedImage(i['filename']);
@@ -241,5 +243,7 @@ Future<List<AnnotatedImage>?> fetchLatestImages() async {
     return images;
   } on DioException catch (e) {
     print('Dio Error: ${e.message}');
+    return null;
   }
 }
+
