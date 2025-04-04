@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import "views/image_viewer.dart";
+import "structs.dart";
 
 void main() {
   runApp(const MainApp());
@@ -43,37 +44,47 @@ class MainApp extends StatelessWidget {
     );
 }
 
-class HomePage extends StatelessWidget {
+class HomePage extends StatefulWidget {
   const HomePage({
     super.key,
   });
 
   @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  String? selectedImageUrl;
+
+  void onImageSelected(String imageUrl) {
+    setState(() {
+      selectedImageUrl = imageUrl;
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-      
         title: Text("Data Annotator"),
         backgroundColor: Theme.of(context).colorScheme.primary,
       ),
       body: Row(
         children: [
-          ImageViewer(),
-          ImageLabellerArea()
+          ImageViewer(onImageSelected: onImageSelected),
+          ImageLabellerArea(selectedImageUrl: selectedImageUrl),
         ],
       ),
     );
   }
 }
 
-
-
-//This is the area where we select, filter, and view the images in the database
-
-
 class ImageLabellerArea extends StatelessWidget {
+  final String? selectedImageUrl;
+
   const ImageLabellerArea({
     super.key,
+    this.selectedImageUrl,
   });
 
   @override
@@ -82,11 +93,24 @@ class ImageLabellerArea extends StatelessWidget {
       flex: 2,
       child: Column(
         children: [
-          Center(child: Text("Hello 2!")),
+          Center(
+            child: selectedImageUrl == null
+                ? Text("Select an image from the left panel")
+                : Text("Selected Image:"),
+          ),
           SizedBox(height: 10),
+          if (selectedImageUrl != null)
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Image.network(
+                  selectedImageUrl!,
+                  fit: BoxFit.contain,
+                ),
+              ),
+            ),
         ],
-        ),
+      ),
     );
   }
 }
-

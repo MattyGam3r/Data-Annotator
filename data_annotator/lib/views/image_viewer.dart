@@ -4,8 +4,11 @@ import '../structs.dart';
 import '../http-requests.dart';
 
 class ImageViewer extends StatefulWidget {
+  final Function(String)? onImageSelected;
+
   ImageViewer({
     super.key,
+    this.onImageSelected,
   });
 
   Future<List<AnnotatedImage>?> fetchImages() {
@@ -18,7 +21,7 @@ class ImageViewer extends StatefulWidget {
 
 class _ImageViewerState extends State<ImageViewer> {
   late Future<List<AnnotatedImage>?> _imagesFuture;
-
+  int? _selectedIndex;
   
   @override
   void initState() {
@@ -92,8 +95,18 @@ class _ImageViewerState extends State<ImageViewer> {
                       padding: const EdgeInsets.all(8),
                       itemCount: images.length,
                       itemBuilder: (BuildContext context, int index) {
+                        final imageUrl = "http://localhost:5001/uploads/${images[index].filepath}";
                         return ClickableImage(
-                          imageUrl: "http://localhost:5001/uploads/${images[index].filepath}"
+                          imageUrl: imageUrl,
+                          isSelected: _selectedIndex == index,
+                          onTap: () {
+                            setState(() {
+                              _selectedIndex = index;
+                            });
+                            if (widget.onImageSelected != null) {
+                              widget.onImageSelected!(imageUrl);
+                            }
+                          },
                         );
                       },
                     ),
@@ -112,19 +125,28 @@ class ClickableImage extends StatelessWidget {
   const ClickableImage({
     super.key,
     required this.imageUrl,
+    required this.onTap,
+    this.isSelected = false,
   });
 
   final String imageUrl;
+  final VoidCallback onTap;
+  final bool isSelected;
 
   @override
   Widget build(BuildContext context) {
     var image = NetworkImage(imageUrl);
     return Card(
       margin: EdgeInsets.symmetric(vertical: 8),
+      elevation: isSelected ? 6 : 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: isSelected 
+            ? BorderSide(color: Theme.of(context).colorScheme.primary, width: 2)
+            : BorderSide.none,
+      ),
       child: InkWell(
-        onTap: () {      
-          print("clicked!");
-        },
+        onTap: onTap,
         child: Ink.image(
           fit: BoxFit.cover,
           width: double.infinity,
