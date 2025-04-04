@@ -1,12 +1,6 @@
-import 'dart:io';
-
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:http/http.dart' as http;
-import 'package:dio/dio.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
-import 'package:web_socket_channel/status.dart' as status;
+import "views/image_viewer.dart";
 
 void main() {
   runApp(const MainApp());
@@ -73,47 +67,9 @@ class HomePage extends StatelessWidget {
 }
 
 
-class AnnotatedImage {
-  //Filepath where we can access the image
-  String filepath;
-  DateTime? uploadedDate;
 
-  AnnotatedImage(this.filepath);
-}
 //This is the area where we select, filter, and view the images in the database
-class ImageViewer extends StatefulWidget {
-  ImageViewer({
-    super.key,
-  });
 
-  @override
-  State<ImageViewer> createState() => _ImageViewerState();
-}
-
-class _ImageViewerState extends State<ImageViewer> {
-
-  List<AnnotatedImage>? images;
-
-  void fetchImages() {
-    
-  }
-  
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Row(children: [
-          Text("Select an Image to Label Here"),
-          SizedBox(width: 20),
-          FileUploadButton(),
-        ],),
-        ClickableImage(),
-        
-        Placeholder(),
-      ],
-    );
-  }
-}
 
 class ImageLabellerArea extends StatelessWidget {
   const ImageLabellerArea({
@@ -128,122 +84,9 @@ class ImageLabellerArea extends StatelessWidget {
         children: [
           Center(child: Text("Hello 2!")),
           SizedBox(height: 10),
-          Image.asset("/home/matthew/Github/Data-Annotator/data_annotator/assets/DogSample1.png"),
         ],
         ),
     );
-  }
-}
-
-class ClickableImage extends StatelessWidget {
-  const ClickableImage({
-    super.key,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    var image = NetworkImage("https://picsum.photos/350/200");
-    return InkWell(
-      onTap: () {      
-        print("clicked!");
-      },
-      child: Ink.image(
-        fit: BoxFit.cover,
-        width: 100,
-        height: 100,
-        image: image,
-      )
-    );
-  }
-}
-
-class FileUploadButton extends StatefulWidget {
-  const FileUploadButton({super.key});  
-
-
-  @override
-  State<FileUploadButton> createState() => _FileUploadButtonState();
-}
-
-class _FileUploadButtonState extends State<FileUploadButton> {
-  @override
-  Widget build(BuildContext context) {
-    return ElevatedButton(
-      child: Text('Upload Image(s)'),
-      onPressed: () async {
-        FilePickerResult? picked = await FilePicker.platform.pickFiles(
-          type: FileType.image,
-          allowMultiple: true,
-          withData: true,
-        );
-
-        if (picked != null) {
-          uploadImages(picked.files);
-        }
-        else {
-          //The user canceled the file picker
-        }
-      },
-    );
-  }
-}
-
-Future<void> uploadImages(List<PlatformFile> files) async {
-  var dio = Dio();
-  var formData = FormData();
-
-  for (var file in files) {
-    formData.files.add(
-      MapEntry(
-        'image',
-        await MultipartFile.fromBytes(file.bytes!, filename: file.name),
-      ),
-    );
-  }
-
-  try {
-    var response = await dio.post(
-      'http://localhost:5001/upload',
-      data: formData,
-      onSendProgress: (sent, total) {
-        print('Progress: ${(sent/total * 100).toStringAsFixed(0)}%');
-      },
-    );
-    print(response.data);
-  } on DioException catch (e) {
-      print('Dio Error: ${e.message}');
-  }
-}
-
-Future<List<AnnotatedImage>?> fetchLatestImages() async {
-  var dio = Dio();
-  try {
-    var response = await dio.get(
-      'http://localhost:5001/images',
-      options: Options(responseType: ResponseType.json),
-    );
-
-    List<AnnotatedImage> images = List.empty(growable: true);
-
-    if (response == null) return null;
-
-    for (var i in response.data) {
-      AnnotatedImage image = AnnotatedImage(i['filename']);
-
-      // Map the database data to our app's format
-      if (i.containsKey('uploaded_date')) {
-        var date = DateTime.parse(i['uploaded_date']);
-        image.uploadedDate = date;
-      }
-
-      // Add the image to the list
-      images.add(image);
-    }
-
-    return images;
-  } on DioException catch (e) {
-    print('Dio Error: ${e.message}');
-    return null;
   }
 }
 

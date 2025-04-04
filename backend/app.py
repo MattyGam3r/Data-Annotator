@@ -70,6 +70,7 @@ def get_images():
      data = [{"filename": row[0]} for row in rows]
      return jsonify(data)
 
+@cross_origin
 @app.route("/uploads/<filename>", methods = ['GET'])
 def get_image(filename):
      return send_from_directory("./uploads/", filename)
