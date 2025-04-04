@@ -89,10 +89,15 @@ class _ImageViewerState extends State<ImageViewer> {
                   
                   // Data is available and not empty
                   List<AnnotatedImage> images = snapshot.data!;
-                  return SizedBox(
-                    width: double.infinity, // Constrain width to parent
-                    child: ListView.builder(
-                      padding: const EdgeInsets.all(8),
+                  return Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: GridView.builder(
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 2, // 2 images per row
+                        crossAxisSpacing: 8,
+                        mainAxisSpacing: 8,
+                        childAspectRatio: 1.2, // Adjust this value to change the height/width ratio
+                      ),
                       itemCount: images.length,
                       itemBuilder: (BuildContext context, int index) {
                         final imageUrl = "http://localhost:5001/uploads/${images[index].filepath}";
@@ -137,7 +142,7 @@ class ClickableImage extends StatelessWidget {
   Widget build(BuildContext context) {
     var image = NetworkImage(imageUrl);
     return Card(
-      margin: EdgeInsets.symmetric(vertical: 8),
+      margin: EdgeInsets.zero,
       elevation: isSelected ? 6 : 1,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(8),
@@ -149,8 +154,6 @@ class ClickableImage extends StatelessWidget {
         onTap: onTap,
         child: Ink.image(
           fit: BoxFit.cover,
-          width: double.infinity,
-          height: 100,
           image: image,
         )
       ),

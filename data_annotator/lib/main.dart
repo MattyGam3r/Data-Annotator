@@ -92,21 +92,46 @@ class ImageLabellerArea extends StatelessWidget {
     return Expanded(
       flex: 2,
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Center(
-            child: selectedImageUrl == null
-                ? Text("Select an image from the left panel")
-                : Text("Selected Image:"),
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Text(
+              selectedImageUrl == null 
+                  ? "Select an image from the left panel" 
+                  : "Selected Image:",
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
           ),
-          SizedBox(height: 10),
           if (selectedImageUrl != null)
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Image.network(
-                  selectedImageUrl!,
-                  fit: BoxFit.contain,
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.of(context).size.height * 0.5, // Limit to 50% of screen height
                 ),
+                child: Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.grey.shade300),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(
+                      selectedImageUrl!,
+                      fit: BoxFit.contain,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          SizedBox(height: 16),
+          if (selectedImageUrl != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16.0),
+              child: Text(
+                "Annotation tools will be placed here...",
+                style: TextStyle(fontStyle: FontStyle.italic),
               ),
             ),
         ],
