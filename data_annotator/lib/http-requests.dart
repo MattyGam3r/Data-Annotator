@@ -6,7 +6,6 @@ import 'package:file_picker/file_picker.dart';
 import 'structs.dart';
 
 Future<void> uploadImages(List<PlatformFile> files) async {
-  CallbackHandle finished;
   var dio = Dio();
   var formData = FormData();
 
@@ -55,7 +54,7 @@ Future<List<AnnotatedImage>?> fetchLatestImages() async {
       }
 
       // Load annotations if they exist
-      if (i.containsKey('annotations')) {
+      if (i.containsKey('annotations') && i['annotations'] != null) {
         try {
           List<dynamic> annotations = jsonDecode(i['annotations']);
           image.boundingBoxes = annotations
@@ -79,11 +78,15 @@ Future<List<AnnotatedImage>?> fetchLatestImages() async {
 
 Future<bool> saveAnnotations(String filename, List<BoundingBox> boxes) async {
   var dio = Dio();
+  
+  // Extract just the filename from the URL
+  String extractedFilename = filename.split('/').last;
+  
   try {
     var response = await dio.post(
       'http://localhost:5001/save_annotations',
       data: {
-        'filename': filename,
+        'filename': extractedFilename,
         'annotations': jsonEncode(boxes.map((box) => box.toJson()).toList()),
       },
     );

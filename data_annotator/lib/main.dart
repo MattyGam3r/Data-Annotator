@@ -3,6 +3,7 @@ import 'package:google_fonts/google_fonts.dart';
 import "views/image_viewer.dart";
 import "structs.dart";
 import 'widgets/zoomable_image.dart';
+import 'http-requests.dart';
 
 void main() {
   runApp(const MainApp());
@@ -56,21 +57,43 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   String? selectedImageUrl;
+  AnnotatedImage? selectedImage;
   List<BoundingBox> currentBoxes = [];
+  final GlobalKey<ImageViewerState> _imageViewerKey = GlobalKey();
+
+  Future<void> loadImageAnnotations(String imageUrl) async {
+    // Extract filename from URL
+    String filename = imageUrl.split('/').last;
+    
+    // Get images to find matching one
+    List<AnnotatedImage>? images = await fetchLatestImages();
+    if (images == null) return;
+    
+    // Find the image that matches the URL
+    AnnotatedImage? matchingImage = images.firstWhere(
+      (img) => img.filepath == filename,
+      orElse: () => AnnotatedImage(filename),
+    );
+    
+    setState(() {
+      selectedImage = matchingImage;
+      selectedImageUrl = imageUrl;
+      currentBoxes = List<BoundingBox>.from(matchingImage.boundingBoxes);
+    });
+  }
 
   void onImageSelected(String imageUrl) {
-    setState(() {
-      selectedImageUrl = imageUrl;
-      // Reset current boxes when a new image is selected
-      // In a more complete implementation, you'd load the boxes for this image
-      currentBoxes = [];
-    });
+    loadImageAnnotations(imageUrl);
   }
 
   void onBoxAdded(BoundingBox box) {
     setState(() {
       currentBoxes.add(box);
     });
+  }
+  
+  void refreshImages() {
+    _imageViewerKey.currentState?.refreshImages();
   }
 
   @override
@@ -82,11 +105,16 @@ class _HomePageState extends State<HomePage> {
       ),
       body: Row(
         children: [
-          ImageViewer(onImageSelected: onImageSelected),
+          ImageViewer(
+            key: _imageViewerKey,
+            onImageSelected: onImageSelected,
+            showBoxes: true,
+          ),
           ImageLabellerArea(
             selectedImageUrl: selectedImageUrl,
             currentBoxes: currentBoxes,
             onBoxAdded: onBoxAdded,
+            onSaveSuccess: refreshImages,
           ),
         ],
       ),
@@ -98,12 +126,14 @@ class ImageLabellerArea extends StatefulWidget {
   final String? selectedImageUrl;
   final List<BoundingBox> currentBoxes;
   final Function(BoundingBox)? onBoxAdded;
+  final VoidCallback? onSaveSuccess;
 
   const ImageLabellerArea({
     super.key,
     this.selectedImageUrl,
     this.currentBoxes = const [],
     this.onBoxAdded,
+    this.onSaveSuccess,
   });
 
   @override
@@ -112,14 +142,42 @@ class ImageLabellerArea extends StatefulWidget {
 
 class _ImageLabellerAreaState extends State<ImageLabellerArea> {
   final TextEditingController _labelController = TextEditingController();
-  bool _isDrawingBox = false;
-  Offset? _startPosition;
-  Offset? _currentPosition;
+  bool _isSaving = false;
   
   @override
   void dispose() {
     _labelController.dispose();
     super.dispose();
+  }
+
+  Future<void> _saveAnnotations() async {
+    if (widget.selectedImageUrl == null || widget.currentBoxes.isEmpty) return;
+    
+    setState(() {
+      _isSaving = true;
+    });
+    
+    String filename = widget.selectedImageUrl!;
+    
+    // Save annotations to backend
+    final success = await saveAnnotations(filename, widget.currentBoxes);
+    
+    setState(() {
+      _isSaving = false;
+    });
+    
+    if (success) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Annotations saved successfully!')),
+      );
+      if (widget.onSaveSuccess != null) {
+        widget.onSaveSuccess!();
+      }
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to save annotations'), backgroundColor: Colors.red),
+      );
+    }
   }
 
   @override
@@ -133,11 +191,30 @@ class _ImageLabellerAreaState extends State<ImageLabellerArea> {
         children: [
           Padding(
             padding: const EdgeInsets.all(16.0),
-            child: Text(
-              widget.selectedImageUrl == null 
-                  ? "Select an image from the left panel" 
-                  : "Selected Image:",
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  widget.selectedImageUrl == null 
+                      ? "Select an image from the left panel" 
+                      : "Selected Image:",
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                ),
+                if (widget.selectedImageUrl != null)
+                  ElevatedButton.icon(
+                    onPressed: widget.currentBoxes.isEmpty || _isSaving 
+                        ? null 
+                        : _saveAnnotations,
+                    icon: _isSaving 
+                        ? SizedBox(
+                            width: 16, 
+                            height: 16, 
+                            child: CircularProgressIndicator(strokeWidth: 2)
+                          )
+                        : Icon(Icons.save),
+                    label: Text('Save Annotations'),
+                  ),
+              ],
             ),
           ),
           if (widget.selectedImageUrl != null)

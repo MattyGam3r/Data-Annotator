@@ -5,10 +5,12 @@ import '../http-requests.dart';
 
 class ImageViewer extends StatefulWidget {
   final Function(String)? onImageSelected;
+  final bool showBoxes;
 
   ImageViewer({
     super.key,
     this.onImageSelected,
+    this.showBoxes = false,
   });
 
   Future<List<AnnotatedImage>?> fetchImages() {
@@ -16,10 +18,10 @@ class ImageViewer extends StatefulWidget {
   }
 
   @override
-  State<ImageViewer> createState() => _ImageViewerState();
+  State<ImageViewer> createState() => ImageViewerState();
 }
 
-class _ImageViewerState extends State<ImageViewer> {
+class ImageViewerState extends State<ImageViewer> {
   late Future<List<AnnotatedImage>?> _imagesFuture;
   int? _selectedIndex;
   
@@ -101,9 +103,12 @@ class _ImageViewerState extends State<ImageViewer> {
                       itemCount: images.length,
                       itemBuilder: (BuildContext context, int index) {
                         final imageUrl = "http://localhost:5001/uploads/${images[index].filepath}";
+                        final hasAnnotations = images[index].boundingBoxes.isNotEmpty;
                         return ClickableImage(
                           imageUrl: imageUrl,
                           isSelected: _selectedIndex == index,
+                          showAnnotationIcon: widget.showBoxes && hasAnnotations,
+                          annotationCount: images[index].boundingBoxes.length,
                           onTap: () {
                             setState(() {
                               _selectedIndex = index;
@@ -132,11 +137,15 @@ class ClickableImage extends StatelessWidget {
     required this.imageUrl,
     required this.onTap,
     this.isSelected = false,
+    this.showAnnotationIcon = false,
+    this.annotationCount = 0,
   });
 
   final String imageUrl;
   final VoidCallback onTap;
   final bool isSelected;
+  final bool showAnnotationIcon;
+  final int annotationCount;
 
   @override
   Widget build(BuildContext context) {
@@ -150,12 +159,43 @@ class ClickableImage extends StatelessWidget {
             ? BorderSide(color: Theme.of(context).colorScheme.primary, width: 2)
             : BorderSide.none,
       ),
-      child: InkWell(
-        onTap: onTap,
-        child: Ink.image(
-          fit: BoxFit.cover,
-          image: image,
-        )
+      child: Stack(
+        children: [
+          InkWell(
+            onTap: onTap,
+            child: Ink.image(
+              fit: BoxFit.cover,
+              image: image,
+            )
+          ),
+          if (showAnnotationIcon)
+            Positioned(
+              top: 8,
+              right: 8,
+              child: Container(
+                padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.7),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.crop_square, 
+                      color: Colors.white,
+                      size: 16,
+                    ),
+                    SizedBox(width: 4),
+                    Text(
+                      annotationCount.toString(),
+                      style: TextStyle(color: Colors.white, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
