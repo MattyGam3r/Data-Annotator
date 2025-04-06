@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import "views/image_viewer.dart";
 import "structs.dart";
 import 'widgets/zoomable_image.dart';
+import 'widgets/frequent_tags_panel.dart';
 import 'http-requests.dart';
 
 void main() {
@@ -60,6 +62,45 @@ class _HomePageState extends State<HomePage> {
   AnnotatedImage? selectedImage;
   List<BoundingBox> currentBoxes = [];
   final GlobalKey<ImageViewerState> _imageViewerKey = GlobalKey();
+  // Added for tracking tag frequencies
+  Map<String, int> tagFrequencies = {};
+  String? selectedTag;
+
+  @override
+  void initState() {
+    super.initState();
+    // Set up keyboard listener for number keys
+    HardwareKeyboard.instance.addHandler(_handleKeyPress);
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleKeyPress);
+    super.dispose();
+  }
+
+  bool _handleKeyPress(KeyEvent event) {
+    if (event is KeyDownEvent && selectedImageUrl != null) {
+      // Check if a number key (1-0) was pressed
+      if (event.logicalKey.keyLabel.length == 1) {
+        final keyValue = event.logicalKey.keyLabel;
+        if (RegExp(r'[1-9]|0').hasMatch(keyValue)) {
+          final keyIndex = keyValue == '0' ? 9 : int.parse(keyValue) - 1;
+          
+          // Get top 10 tags
+          final sortedTags = tagFrequencies.entries.toList()
+            ..sort((a, b) => b.value.compareTo(a.value));
+          
+          if (keyIndex < sortedTags.length) {
+            setState(() {
+              selectedTag = sortedTags[keyIndex].key;
+            });
+          }
+        }
+      }
+    }
+    return false;
+  }
 
   Future<void> loadImageAnnotations(String imageUrl) async {
     // Extract filename from URL
@@ -75,10 +116,31 @@ class _HomePageState extends State<HomePage> {
       orElse: () => AnnotatedImage(filename),
     );
     
+    // Update tag frequencies
+    _updateTagFrequencies(images);
+    
     setState(() {
       selectedImage = matchingImage;
       selectedImageUrl = imageUrl;
       currentBoxes = List<BoundingBox>.from(matchingImage.boundingBoxes);
+    });
+  }
+
+  void _updateTagFrequencies(List<AnnotatedImage> images) {
+    // Reset tag frequencies
+    final newFrequencies = <String, int>{};
+    
+    // Count all tag occurrences across all images
+    for (var image in images) {
+      for (var box in image.boundingBoxes) {
+        if (box.label.isNotEmpty) {
+          newFrequencies[box.label] = (newFrequencies[box.label] ?? 0) + 1;
+        }
+      }
+    }
+    
+    setState(() {
+      tagFrequencies = newFrequencies;
     });
   }
 
@@ -89,11 +151,22 @@ class _HomePageState extends State<HomePage> {
   void onBoxAdded(BoundingBox box) {
     setState(() {
       currentBoxes.add(box);
+      
+      // Update frequency for the tag
+      if (box.label.isNotEmpty) {
+        tagFrequencies[box.label] = (tagFrequencies[box.label] ?? 0) + 1;
+      }
     });
   }
   
   void refreshImages() {
     _imageViewerKey.currentState?.refreshImages();
+  }
+
+  void selectTag(String tag) {
+    setState(() {
+      selectedTag = tag;
+    });
   }
 
   @override
@@ -115,6 +188,9 @@ class _HomePageState extends State<HomePage> {
             currentBoxes: currentBoxes,
             onBoxAdded: onBoxAdded,
             onSaveSuccess: refreshImages,
+            tagFrequencies: tagFrequencies,
+            selectedTag: selectedTag,
+            onTagSelected: selectTag,
           ),
         ],
       ),
@@ -127,6 +203,9 @@ class ImageLabellerArea extends StatefulWidget {
   final List<BoundingBox> currentBoxes;
   final Function(BoundingBox)? onBoxAdded;
   final VoidCallback? onSaveSuccess;
+  final Map<String, int> tagFrequencies;
+  final String? selectedTag;
+  final Function(String) onTagSelected;
 
   const ImageLabellerArea({
     super.key,
@@ -134,6 +213,9 @@ class ImageLabellerArea extends StatefulWidget {
     this.currentBoxes = const [],
     this.onBoxAdded,
     this.onSaveSuccess,
+    required this.tagFrequencies,
+    this.selectedTag,
+    required this.onTagSelected,
   });
 
   @override
@@ -218,62 +300,93 @@ class _ImageLabellerAreaState extends State<ImageLabellerArea> {
             ),
           ),
           if (widget.selectedImageUrl != null)
-            Align(
-              alignment: Alignment.center,
-              child: Container(
-                height: screenHeight * 0.5, // Fixed height of 50% of screen
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    ZoomableImage(
-                      imageUrl: widget.selectedImageUrl!,
-                      boxes: widget.currentBoxes,
-                      onBoxDrawn: (box) {
-                        if (widget.onBoxAdded != null) {
-                          _showLabelDialog(box);
-                        }
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          if (widget.selectedImageUrl != null)
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                child: Column(
+                child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    SizedBox(height: 16),
-                    Text(
-                      "Annotations:",
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                    ),
-                    SizedBox(height: 8),
+                    // Left side - Image and Annotations pane
                     Expanded(
-                      child: widget.currentBoxes.isEmpty
-                          ? Center(child: Text("No annotations yet. Draw a box on the image."))
-                          : ListView.builder(
-                              itemCount: widget.currentBoxes.length,
-                              itemBuilder: (context, index) {
-                                final box = widget.currentBoxes[index];
-                                return ListTile(
-                                  title: Text(box.label),
-                                  subtitle: Text(
-                                      "x: ${box.x.toStringAsFixed(2)}, y: ${box.y.toStringAsFixed(2)}, " +
-                                      "w: ${box.width.toStringAsFixed(2)}, h: ${box.height.toStringAsFixed(2)}"),
-                                  trailing: IconButton(
-                                    icon: Icon(Icons.delete),
-                                    onPressed: () {
-                                      // Delete box functionality would go here
-                                    },
-                                  ),
-                                );
+                      flex: 3,
+                      child: Column(
+                        children: [
+                          // Image area - takes upper part
+                          Container(
+                            height: screenHeight * 0.5,
+                            child: ZoomableImage(
+                              imageUrl: widget.selectedImageUrl!,
+                              boxes: widget.currentBoxes,
+                              onBoxDrawn: (box) {
+                                if (widget.onBoxAdded != null) {
+                                  // If a tag is selected, use it automatically
+                                  if (widget.selectedTag != null) {
+                                    final labeledBox = box.copyWith(label: widget.selectedTag!);
+                                    widget.onBoxAdded?.call(labeledBox);
+                                  } else {
+                                    // Otherwise show the label dialog
+                                    _showLabelDialog(box);
+                                  }
+                                }
                               },
                             ),
+                          ),
+                          SizedBox(height: 16),
+                          // Annotations list - takes lower part
+                          Expanded(
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: Colors.grey.shade100,
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(color: Colors.grey.shade300),
+                              ),
+                              padding: EdgeInsets.all(16),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    "Annotations:",
+                                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                                  ),
+                                  SizedBox(height: 8),
+                                  Expanded(
+                                    child: widget.currentBoxes.isEmpty
+                                        ? Center(child: Text("No annotations yet. Draw a box on the image."))
+                                        : ListView.builder(
+                                            itemCount: widget.currentBoxes.length,
+                                            itemBuilder: (context, index) {
+                                              final box = widget.currentBoxes[index];
+                                              return ListTile(
+                                                title: Text(box.label),
+                                                subtitle: Text(
+                                                    "x: ${box.x.toStringAsFixed(2)}, y: ${box.y.toStringAsFixed(2)}, " +
+                                                    "w: ${box.width.toStringAsFixed(2)}, h: ${box.height.toStringAsFixed(2)}"),
+                                                trailing: IconButton(
+                                                  icon: Icon(Icons.delete),
+                                                  onPressed: () {
+                                                    // Delete box functionality would go here
+                                                  },
+                                                ),
+                                              );
+                                            },
+                                          ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(width: 16),
+                    // Right side - Frequent Tags panel
+                    Expanded(
+                      flex: 1,
+                      child: FrequentTagsPanel(
+                        tagFrequency: widget.tagFrequencies,
+                        onTagSelected: widget.onTagSelected,
+                        selectedTag: widget.selectedTag,
+                      ),
                     ),
                   ],
                 ),
