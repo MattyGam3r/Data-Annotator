@@ -80,27 +80,37 @@ class _HomePageState extends State<HomePage> {
   }
 
   bool _handleKeyPress(KeyEvent event) {
-    if (event is KeyDownEvent && selectedImageUrl != null) {
-      // Check if a number key (1-0) was pressed
-      if (event.logicalKey.keyLabel.length == 1) {
-        final keyValue = event.logicalKey.keyLabel;
-        if (RegExp(r'[1-9]|0').hasMatch(keyValue)) {
-          final keyIndex = keyValue == '0' ? 9 : int.parse(keyValue) - 1;
+  if (event is KeyDownEvent && selectedImageUrl != null) {
+    // Check if a number key (1-9, 0) was pressed
+    if (event.logicalKey.keyLabel.length == 1) {
+      final keyValue = event.logicalKey.keyLabel;
+      if (RegExp(r'[1-9]|0').hasMatch(keyValue)) {
+        final keyIndex = keyValue == '0' ? 9 : int.parse(keyValue) - 1;
+        
+        // Get top 10 tags
+        final sortedTags = tagFrequencies.entries.toList()
+          ..sort((a, b) => b.value.compareTo(a.value));
+        
+        // Only proceed if there are tags available
+        if (keyIndex < sortedTags.length) {
+          final tagKey = sortedTags[keyIndex].key;
           
-          // Get top 10 tags
-          final sortedTags = tagFrequencies.entries.toList()
-            ..sort((a, b) => b.value.compareTo(a.value));
-          
-          if (keyIndex < sortedTags.length) {
+          // Toggle selection - if it's already selected, deselect it
+          if (selectedTag == tagKey) {
             setState(() {
-              selectedTag = sortedTags[keyIndex].key;
+              selectedTag = null;
+            });
+          } else {
+            setState(() {
+              selectedTag = tagKey;
             });
           }
         }
       }
     }
-    return false;
   }
+  return false;
+}
 
   Future<void> loadImageAnnotations(String imageUrl) async {
     // Extract filename from URL
@@ -164,10 +174,15 @@ class _HomePageState extends State<HomePage> {
   }
 
   void selectTag(String tag) {
-    setState(() {
+  setState(() {
+    // If the tag is already selected, deselect it
+    if (selectedTag == tag) {
+      selectedTag = null;
+    } else {
       selectedTag = tag;
-    });
-  }
+    }
+  });
+}
 
   @override
   Widget build(BuildContext context) {

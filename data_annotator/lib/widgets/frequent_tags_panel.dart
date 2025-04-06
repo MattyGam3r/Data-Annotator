@@ -36,9 +36,27 @@ class _FrequentTagsPanelState extends State<FrequentTagsPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            "Frequent Tags",
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                "Frequent Tags",
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              if (widget.selectedTag != null)
+                InkWell(
+                  onTap: () => widget.onTagSelected(widget.selectedTag!), // This will deselect
+                  child: Padding(
+                    padding: const EdgeInsets.all(4.0),
+                    child: Row(
+                      children: [
+                        Text('Clear', style: TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                        Icon(Icons.close, size: 16, color: Colors.grey.shade700),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
           ),
           SizedBox(height: 8),
           if (top10Tags.isEmpty)
@@ -93,6 +111,15 @@ class _FrequentTagsPanelState extends State<FrequentTagsPanel> {
                               fontSize: 12,
                             ),
                           ),
+                          if (isSelected)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 4.0),
+                              child: Icon(
+                                Icons.check_circle,
+                                size: 16,
+                                color: Colors.white,
+                              ),
+                            ),
                         ],
                       ),
                     ),
@@ -102,7 +129,9 @@ class _FrequentTagsPanelState extends State<FrequentTagsPanel> {
             ),
           SizedBox(height: 16),
           Text(
-            "Press 1-0 keys to select tags",
+            widget.selectedTag == null 
+                ? "Press 1-0 keys to select tags" 
+                : "Press ${widget.hashCode} key again to deselect",
             style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
           ),
         ],
