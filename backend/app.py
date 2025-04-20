@@ -1,9 +1,10 @@
 import os
 import sqlite3
+import json
 from flask import Flask, jsonify, Response, request, render_template, send_from_directory
 from flask_cors import CORS, cross_origin
 from werkzeug import utils
-
+from yolo_model import YOLOModel
 
 app = Flask(__name__)
 cors = CORS(app, 
@@ -28,6 +29,7 @@ def init_db():
             filename TEXT NOT NULL,
             upload_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             annotations TEXT,
+            is_fully_annotated BOOLEAN DEFAULT 0,
             UNIQUE (filename)
         );
     ''')
@@ -64,9 +66,14 @@ def upload_image():
 def get_images():
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    c.execute("SELECT filename, upload_time, annotations FROM images")
+    c.execute("SELECT filename, upload_time, annotations, is_fully_annotated FROM images")
     rows = c.fetchall()
-    data = [{"filename": row[0], "upload_time": row[1], "annotations": row[2]} for row in rows]
+    data = [{
+        "filename": row[0], 
+        "upload_time": row[1], 
+        "annotations": row[2],
+        "isFullyAnnotated": bool(row[3])
+    } for row in rows]
     return jsonify(data)
 
 @cross_origin
@@ -79,6 +86,7 @@ def save_annotations():
     data = request.json
     filename = data.get('filename')
     annotations = data.get('annotations')
+    is_fully_annotated = data.get('isFullyAnnotated', False)
     
     if not filename or filename.strip() == '':
         return jsonify({"error": "Filename is required"}), 400
@@ -90,8 +98,8 @@ def save_annotations():
     c = conn.cursor()
     
     try:
-        c.execute("UPDATE images SET annotations = ? WHERE filename = ?", 
-                 (annotations, filename))
+        c.execute("UPDATE images SET annotations = ?, is_fully_annotated = ? WHERE filename = ?", 
+                 (annotations, is_fully_annotated, filename))
         conn.commit()
         
         if c.rowcount == 0:
@@ -104,5 +112,65 @@ def save_annotations():
     finally:
         conn.close()
 
+@app.route("/model_status", methods=["GET"])
+def get_model_status():
+    """Get the current status of the YOLO model"""
+    return jsonify(YOLOModel.get_model_status())
+
+@app.route("/train_model", methods=["POST"])
+def train_model():
+    """Start training the YOLO model with annotated data"""
+    data = request.json
+    images = data.get('images', [])
+    
+    success = YOLOModel.start_training(images)
+    
+    if success:
+        return jsonify({"message": "Model training started"})
+    else:
+        return jsonify({"error": "Training already in progress"}), 400
+
+@app.route("/predict", methods=["POST"])
+def predict():
+    """Get predictions for an image"""
+    data = request.json
+    filename = data.get('filename')
+    
+    if not filename:
+        return jsonify({"error": "Filename is required"}), 400
+    
+    predictions = YOLOModel.predict(filename)
+    
+    return jsonify({"predictions": predictions})
+
+@app.route("/mark_complete", methods=["POST"])
+def mark_complete():
+    """Mark an image as fully annotated"""
+    data = request.json
+    filename = data.get('filename')
+    
+    if not filename:
+        return jsonify({"error": "Filename is required"}), 400
+    
+    # Extract just the filename part (remove any URL components)
+    filename = filename.split('/')[-1]
+    
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    try:
+        c.execute("UPDATE images SET is_fully_annotated = 1 WHERE filename = ?", (filename,))
+        conn.commit()
+        
+        if c.rowcount == 0:
+            return jsonify({"error": "Image not found"}), 404
+            
+        return jsonify({"message": "Image marked as fully annotated"})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    app.run(host="0.0.0.0", port=5001)

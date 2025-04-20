@@ -5,3 +5,6 @@ gunicorn
 werkzeug
 flask_uploads
 flask_wtf
+numpy
+ultralytics
+torch
