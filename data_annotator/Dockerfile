@@ -3,8 +3,7 @@ FROM debian:latest AS build-env
 
 # install all needed stuff
 RUN apt-get update
-RUN apt-get install -y curl git unzip
-
+RUN apt-get install -y curl git ffmpeg libsm6 libxext6 libgl1 python3-opencv libgl1-mesa-glx libglib2.0-0 unzip
 # define variables
 ARG FLUTTER_SDK=/usr/local/flutter
 ARG FLUTTER_VERSION=3.29.2

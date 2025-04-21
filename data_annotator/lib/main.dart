@@ -1,3 +1,4 @@
+import 'package:data_annotator/yolo_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -78,6 +79,7 @@ class _HomePageState extends State<HomePage> {
     HardwareKeyboard.instance.removeHandler(_handleKeyPress);
     super.dispose();
   }
+  
 
   bool _handleKeyPress(KeyEvent event) {
   if (event is KeyDownEvent && selectedImageUrl != null) {
@@ -113,28 +115,50 @@ class _HomePageState extends State<HomePage> {
 }
 
   Future<void> loadImageAnnotations(String imageUrl) async {
-    // Extract filename from URL
-    String filename = imageUrl.split('/').last;
-    
-    // Get images to find matching one
-    List<AnnotatedImage>? images = await fetchLatestImages();
-    if (images == null) return;
-    
-    // Find the image that matches the URL
-    AnnotatedImage? matchingImage = images.firstWhere(
-      (img) => img.filepath == filename,
-      orElse: () => AnnotatedImage(filename),
-    );
-    
-    // Update tag frequencies
-    _updateTagFrequencies(images);
-    
-    setState(() {
-      selectedImage = matchingImage;
-      selectedImageUrl = imageUrl;
-      currentBoxes = List<BoundingBox>.from(matchingImage.boundingBoxes);
-    });
+  // Extract filename from URL
+  String filename = imageUrl.split('/').last;
+  
+  // Get images to find matching one
+  List<AnnotatedImage>? images = await fetchLatestImages();
+  if (images == null) return;
+  
+  // Find the image that matches the URL
+  AnnotatedImage? matchingImage = images.firstWhere(
+    (img) => img.filepath == filename,
+    orElse: () => AnnotatedImage(filename),
+  );
+  
+  // Update tag frequencies
+  _updateTagFrequencies(images);
+  
+  // Set state with existing annotations
+  setState(() {
+    selectedImage = matchingImage;
+    selectedImageUrl = imageUrl;
+    currentBoxes = List<BoundingBox>.from(matchingImage.boundingBoxes);
+  });
+  
+  // If image has no annotations, try to get AI predictions
+  if (currentBoxes.isEmpty) {
+    final yoloService = YoloService();
+    if (await yoloService.isModelAvailable()) {
+      final predictions = await yoloService.predictAnnotations(imageUrl);
+      if (predictions != null && predictions.isNotEmpty) {
+        setState(() {
+          currentBoxes = predictions;
+        });
+        
+        // Show a notification to the user
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('AI suggested ${predictions.length} annotations. Please verify them.'),
+            duration: Duration(seconds: 5),
+          ),
+        );
+      }
+    }
   }
+}
 
   void _updateTagFrequencies(List<AnnotatedImage> images) {
     // Reset tag frequencies
@@ -246,6 +270,47 @@ class _ImageLabellerAreaState extends State<ImageLabellerArea> {
     _labelController.dispose();
     super.dispose();
   }
+  bool _isMarkingComplete = false;
+
+// Add this method to _ImageLabellerAreaState
+Future<void> _markImageComplete() async {
+  if (widget.selectedImageUrl == null) return;
+  
+  setState(() {
+    _isMarkingComplete = true;
+  });
+  
+  // Extract just the filename
+  String filename = widget.selectedImageUrl!.split('/').last;
+  
+  // First save annotations
+  final saved = await saveAnnotations(filename, widget.currentBoxes, isFullyAnnotated: true);
+  
+  if (saved) {
+    // Now fetch all annotated images and train the model
+    final images = await fetchLatestImages();
+    if (images != null) {
+      final yoloService = YoloService();
+      await yoloService.trainModel(images);
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Image marked as complete. Model training started!')),
+      );
+    }
+  } else {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Failed to mark image as complete'), backgroundColor: Colors.red),
+    );
+  }
+  
+  setState(() {
+    _isMarkingComplete = false;
+  });
+  
+  if (widget.onSaveSuccess != null) {
+    widget.onSaveSuccess!();
+  }
+}
 
   Future<void> _saveAnnotations() async {
     if (widget.selectedImageUrl == null || widget.currentBoxes.isEmpty) return;
@@ -289,30 +354,38 @@ class _ImageLabellerAreaState extends State<ImageLabellerArea> {
           Padding(
             padding: const EdgeInsets.all(16.0),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  widget.selectedImageUrl == null 
-                      ? "Select an image from the left panel" 
-                      : "Selected Image:",
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                if (widget.selectedImageUrl != null)
-                  ElevatedButton.icon(
-                    onPressed: widget.currentBoxes.isEmpty || _isSaving 
-                        ? null 
-                        : _saveAnnotations,
-                    icon: _isSaving 
-                        ? SizedBox(
-                            width: 16, 
-                            height: 16, 
-                            child: CircularProgressIndicator(strokeWidth: 2)
-                          )
-                        : Icon(Icons.save),
-                    label: Text('Save Annotations'),
-                  ),
-              ],
-            ),
+  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+  children: [
+    Text(
+      widget.selectedImageUrl == null 
+          ? "Select an image from the left panel" 
+          : "Selected Image:",
+      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+    ),
+    if (widget.selectedImageUrl != null)
+      Row(
+        children: [
+          ElevatedButton.icon(
+            onPressed: _isMarkingComplete ? null : _markImageComplete,
+            icon: _isMarkingComplete 
+                ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : Icon(Icons.check_circle),
+            label: Text('Mark Complete'),
+          ),
+          SizedBox(width: 8),
+          ElevatedButton.icon(
+            onPressed: widget.currentBoxes.isEmpty || _isSaving 
+                ? null 
+                : _saveAnnotations,
+            icon: _isSaving 
+                ? SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                : Icon(Icons.save),
+            label: Text('Save Annotations'),
+          ),
+        ],
+      ),
+  ],
+),
           ),
           if (widget.selectedImageUrl != null)
             Expanded(
@@ -368,23 +441,58 @@ class _ImageLabellerAreaState extends State<ImageLabellerArea> {
                                     child: widget.currentBoxes.isEmpty
                                         ? Center(child: Text("No annotations yet. Draw a box on the image."))
                                         : ListView.builder(
-                                            itemCount: widget.currentBoxes.length,
-                                            itemBuilder: (context, index) {
-                                              final box = widget.currentBoxes[index];
-                                              return ListTile(
-                                                title: Text(box.label),
-                                                subtitle: Text(
-                                                    "x: ${box.x.toStringAsFixed(2)}, y: ${box.y.toStringAsFixed(2)}, " +
-                                                    "w: ${box.width.toStringAsFixed(2)}, h: ${box.height.toStringAsFixed(2)}"),
-                                                trailing: IconButton(
-                                                  icon: Icon(Icons.delete),
-                                                  onPressed: () {
-                                                    // Delete box functionality would go here
-                                                  },
-                                                ),
-                                              );
-                                            },
-                                          ),
+  itemCount: widget.currentBoxes.length,
+  itemBuilder: (context, index) {
+    final box = widget.currentBoxes[index];
+    return ListTile(
+      leading: box.source == AnnotationSource.ai 
+          ? Icon(Icons.auto_awesome, color: box.isVerified ? Colors.green : Colors.amber)
+          : Icon(Icons.person, color: Colors.blue),
+      title: Row(
+        children: [
+          Text(box.label),
+          SizedBox(width: 8),
+          // Show confidence for AI predictions
+          if (box.source == AnnotationSource.ai)
+            Text(
+              "(${(box.confidence * 100).toStringAsFixed(0)}%)",
+              style: TextStyle(
+                color: Colors.grey,
+                fontSize: 12,
+              ),
+            ),
+        ],
+      ),
+      subtitle: Text(
+          "x: ${box.x.toStringAsFixed(2)}, y: ${box.y.toStringAsFixed(2)}, " +
+          "w: ${box.width.toStringAsFixed(2)}, h: ${box.height.toStringAsFixed(2)}"),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Verification button for AI annotations
+          if (box.source == AnnotationSource.ai && !box.isVerified)
+            IconButton(
+              icon: Icon(Icons.check, color: Colors.green),
+              onPressed: () {
+                setState(() {
+                  // Replace the box with a verified version
+                  widget.currentBoxes[index] = box.copyWith(isVerified: true);
+                });
+              },
+            ),
+          IconButton(
+            icon: Icon(Icons.delete),
+            onPressed: () {
+              setState(() {
+                widget.currentBoxes.removeAt(index);
+              });
+            },
+          ),
+        ],
+      ),
+    );
+  },
+),
                                   ),
                                 ],
                               ),

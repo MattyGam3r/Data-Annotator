@@ -3,7 +3,7 @@ FROM python:3.10
 
 # Set the working directory
 WORKDIR /app
-
+RUN apt-get update && apt-get install -y libsm6 libxext6 libglib2.0-0 unzip libgl1-mesa-dev
 # Copy the current directory contents into the container at /app
 COPY . /app
 

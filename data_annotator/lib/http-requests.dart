@@ -79,25 +79,22 @@ Future<List<AnnotatedImage>?> fetchLatestImages() async {
   }
 }
 
-Future<bool> saveAnnotations(String filename, List<BoundingBox> boxes, {bool isFullyAnnotated = false}) async {
+Future<bool> saveAnnotations(String imageUrl, List<BoundingBox> boxes, {bool isFullyAnnotated = false}) async {
   var dio = Dio();
   
-  // Extract just the filename from the URL
-  String extractedFilename = filename.split('/').last;
-  
-  try {
-    var response = await dio.post(
+   try {
+    final filename = imageUrl.split('/').last;
+    final response = await dio.post(
       'http://localhost:5001/save_annotations',
       data: {
-        'filename': extractedFilename,
-        'annotations': jsonEncode(boxes.map((box) => box.toJson()).toList()),
-        'isFullyAnnotated': isFullyAnnotated,
+        'filename': filename,
+        'annotations': json.encode(boxes.map((box) => box.toJson()).toList()),
+        'isFullyAnnotated': isFullyAnnotated
       },
     );
-    
     return response.statusCode == 200;
-  } on DioException catch (e) {
-    print('Dio Error: ${e.message}');
+  } catch (e) {
+    print('Error saving annotations: $e');
     return false;
   }
 }
