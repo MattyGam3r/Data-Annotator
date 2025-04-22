@@ -11,113 +11,95 @@ class TrainingStatusWidget extends StatefulWidget {
 
 class _TrainingStatusWidgetState extends State<TrainingStatusWidget> {
   final YoloService _yoloService = YoloService();
-  Timer? _timer;
   bool _isTraining = false;
-  bool _isModelAvailable = false;
   double _progress = 0.0;
+  bool _modelAvailable = false;
+  Timer? _statusTimer;
 
   @override
   void initState() {
     super.initState();
     _checkInitialStatus();
-    // Update status every 2 seconds
-    _timer = Timer.periodic(Duration(seconds: 2), (_) => _updateTrainingStatus());
-  }
-
-  Future<void> _checkInitialStatus() async {
-    final isTraining = await _yoloService.isModelTraining();
-    final isAvailable = await _yoloService.isModelAvailable();
-    
-    if (mounted) {
-      setState(() {
-        _isTraining = isTraining;
-        _isModelAvailable = isAvailable;
-      });
-    }
-    
-    if (_isTraining) {
-      _updateTrainingStatus();
-    }
-  }
-
-  Future<void> _updateTrainingStatus() async {
-    final status = await _yoloService.getTrainingStatus();
-    
-    if (mounted) {
-      setState(() {
-        _isTraining = status['training_in_progress'] ?? false;
-        _progress = status['progress']?.toDouble() ?? 0.0;
-        _isModelAvailable = status['model_available'] ?? false;
-      });
-    }
+    // Start a periodic timer to update status
+    _statusTimer = Timer.periodic(Duration(seconds: 3), (_) => _updateStatus());
   }
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _statusTimer?.cancel();
     super.dispose();
+  }
+
+  Future<void> _checkInitialStatus() async {
+    _modelAvailable = await _yoloService.isModelAvailable();
+    _isTraining = await _yoloService.isModelTraining();
+    
+    if (_isTraining || _modelAvailable) {
+      final status = await _yoloService.getTrainingStatus();
+      setState(() {
+        _isTraining = status['training_in_progress'] ?? false;
+        _progress = (status['progress'] ?? 0.0).toDouble();
+        _modelAvailable = status['model_available'] ?? false;
+      });
+    }
+  }
+
+  Future<void> _updateStatus() async {
+    if (mounted) {
+      final status = await _yoloService.getTrainingStatus();
+      setState(() {
+        _isTraining = status['training_in_progress'] ?? false;
+        _progress = (status['progress'] ?? 0.0).toDouble();
+        _modelAvailable = status['model_available'] ?? false;
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: Colors.grey.shade100,
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: Colors.grey.shade300),
       ),
+      padding: EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            'Model Status',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+            "AI Model Status",
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
           ),
           SizedBox(height: 12),
           Row(
             children: [
               Icon(
-                _isModelAvailable ? Icons.check_circle : Icons.error_outline,
-                color: _isModelAvailable ? Colors.green : Colors.orange,
-                size: 18,
+                _modelAvailable ? Icons.check_circle : Icons.info_outline,
+                color: _modelAvailable ? Colors.green : Colors.orange,
               ),
               SizedBox(width: 8),
               Text(
-                _isModelAvailable 
-                    ? 'AI model available' 
-                    : 'No model available yet',
+                _modelAvailable 
+                    ? "Model is available for predictions" 
+                    : "No trained model available yet",
               ),
             ],
           ),
-          SizedBox(height: 8),
           if (_isTraining) ...[
-            Row(
-              children: [
-                SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    value: _progress > 0 ? _progress : null,
-                  ),
-                ),
-                SizedBox(width: 8),
-                Text('Training in progress'),
-              ],
-            ),
+            SizedBox(height: 12),
+            Text("Training in progress:"),
             SizedBox(height: 8),
             LinearProgressIndicator(
-              value: _progress > 0 ? _progress : null,
+              value: _progress,
               backgroundColor: Colors.grey.shade300,
-              valueColor: AlwaysStoppedAnimation<Color>(Colors.amber),
+              valueColor: AlwaysStoppedAnimation<Color>(
+                Theme.of(context).colorScheme.primary,
+              ),
             ),
             SizedBox(height: 4),
-            Text(
-              '${(_progress * 100).toStringAsFixed(0)}%',
-              style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
-            ),
+            Text("${(_progress * 100).toStringAsFixed(1)}%"),
           ],
         ],
       ),

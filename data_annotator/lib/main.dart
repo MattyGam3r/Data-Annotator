@@ -115,7 +115,7 @@ class _HomePageState extends State<HomePage> {
   return false;
 }
 
-  Future<void> loadImageAnnotations(String imageUrl) async {
+ Future<void> loadImageAnnotations(String imageUrl) async {
   // Extract filename from URL
   String filename = imageUrl.split('/').last;
   
@@ -143,7 +143,29 @@ class _HomePageState extends State<HomePage> {
   if (currentBoxes.isEmpty) {
     final yoloService = YoloService();
     if (await yoloService.isModelAvailable()) {
-      final predictions = await yoloService.predictAnnotations(imageUrl);
+      // Show loading indicator
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              SizedBox(width: 8),
+              Text('Getting AI predictions...'),
+            ],
+          ),
+          duration: Duration(seconds: 10),
+        ),
+      );
+      
+      final predictions = await getPredictions(filename);
+      
+      // Dismiss the loading snackbar
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      
       if (predictions != null && predictions.isNotEmpty) {
         setState(() {
           currentBoxes = predictions;
@@ -154,6 +176,23 @@ class _HomePageState extends State<HomePage> {
           SnackBar(
             content: Text('AI suggested ${predictions.length} annotations. Please verify them.'),
             duration: Duration(seconds: 5),
+            action: SnackBarAction(
+              label: 'VERIFY ALL',
+              onPressed: () {
+                setState(() {
+                  currentBoxes = currentBoxes.map((box) => 
+                    box.copyWith(isVerified: true)
+                  ).toList();
+                });
+              },
+            ),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('No AI predictions available for this image.'),
+            duration: Duration(seconds: 3),
           ),
         );
       }
@@ -439,16 +478,81 @@ Widget build(BuildContext context) {
                                 ),
                                 SizedBox(height: 8),
                                 Expanded(
-                                  child: widget.currentBoxes.isEmpty
-                                      ? Center(child: Text("No annotations yet. Draw a box on the image."))
-                                      : ListView.builder(
-                                          itemCount: widget.currentBoxes.length,
-                                          itemBuilder: (context, index) {
-                                            // Rest of your annotation list code remains the same
-                                            // ...
-                                          },
-                                        ),
-                                ),
+  child: widget.currentBoxes.isEmpty
+    ? Center(child: Text("No annotations yet. Draw a box on the image."))
+    : ListView.builder(
+        itemCount: widget.currentBoxes.length,
+        itemBuilder: (context, index) {
+          final box = widget.currentBoxes[index];
+          return Card(
+            margin: EdgeInsets.only(bottom: 8),
+            child: ListTile(
+              leading: Icon(
+                box.source == AnnotationSource.ai 
+                  ? Icons.smart_toy
+                  : Icons.person,
+                color: box.isVerified ? Colors.green : Colors.orange,
+              ),
+              title: Text(box.label.isEmpty ? "No label" : box.label),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "Position: (${(box.x * 100).toStringAsFixed(1)}%, ${(box.y * 100).toStringAsFixed(1)}%)"
+                  ),
+                  if (box.source == AnnotationSource.ai)
+                    Row(
+                      children: [
+                        Text("Confidence: "),
+                        _buildConfidenceIndicator(box.confidence),
+                        SizedBox(width: 4),
+                        Text("${(box.confidence * 100).toStringAsFixed(0)}%"),
+                      ],
+                    ),
+                ],
+              ),
+              trailing: box.source == AnnotationSource.ai && !box.isVerified
+                ? Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: Icon(Icons.check, color: Colors.green),
+                        tooltip: "Verify",
+                        onPressed: () {
+                          // Update the box to be verified
+                          setState(() {
+                            final updatedBox = box.copyWith(isVerified: true);
+                            widget.currentBoxes[index] = updatedBox;
+                          });
+                        },
+                      ),
+                      IconButton(
+                        icon: Icon(Icons.delete, color: Colors.red),
+                        tooltip: "Remove",
+                        onPressed: () {
+                          // Remove the box
+                          setState(() {
+                            widget.currentBoxes.removeAt(index);
+                          });
+                        },
+                      ),
+                    ],
+                  )
+                : IconButton(
+                    icon: Icon(Icons.delete, color: Colors.red),
+                    tooltip: "Remove",
+                    onPressed: () {
+                      // Remove the box
+                      setState(() {
+                        widget.currentBoxes.removeAt(index);
+                      });
+                    },
+                  ),
+            ),
+          );
+        },
+      ),
+),
                               ],
                             ),
                           ),
@@ -514,4 +618,24 @@ Widget build(BuildContext context) {
       ),
     );
   }
+  Widget _buildConfidenceIndicator(double confidence) {
+  Color color;
+  if (confidence >= 0.8) {
+    color = Colors.green;
+  } else if (confidence >= 0.5) {
+    color = Colors.orange;
+  } else {
+    color = Colors.red;
+  }
+  
+  return Container(
+    width: 50,
+    height: 8,
+    child: LinearProgressIndicator(
+      value: confidence,
+      backgroundColor: Colors.grey.shade300,
+      valueColor: AlwaysStoppedAnimation<Color>(color),
+    ),
+  );
+}
 }

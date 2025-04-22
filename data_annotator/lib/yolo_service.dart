@@ -5,8 +5,9 @@ import 'structs.dart';
 class YoloService {
   final Dio _dio = Dio();
   final String baseUrl = 'http://localhost:5001';
-  bool _isModelTraining = false;
-  bool _isModelAvailable = false;
+  static bool _isModelTraining = false;
+  static bool _isModelAvailable = false;
+  static double _trainingProgress = 0.0;
 
   Future<bool> isModelAvailable() async {
     try {
@@ -23,6 +24,7 @@ class YoloService {
     try {
       final response = await _dio.get('$baseUrl/model_status');
       _isModelTraining = response.data['training_in_progress'] ?? false;
+      _trainingProgress = (response.data['progress'] ?? 0.0).toDouble();
       return _isModelTraining;
     } on DioException catch (e) {
       print('Error checking training status: ${e.message}');
@@ -47,12 +49,13 @@ class YoloService {
       // Start the training process
       final response = await _dio.post(
         '$baseUrl/train_model',
-        data: jsonEncode({
+        data: {
           'images': trainingImages.map((img) => img.toJson()).toList(),
-        }),
+        },
       );
       
       _isModelTraining = true;
+      _trainingProgress = 0.0;
       return response.statusCode == 200;
     } on DioException catch (e) {
       print('Error training model: ${e.message}');
@@ -102,13 +105,19 @@ class YoloService {
   Future<Map<String, dynamic>> getTrainingStatus() async {
     try {
       final response = await _dio.get('$baseUrl/model_status');
+      
+      // Update our cached values
+      _isModelTraining = response.data['training_in_progress'] ?? false;
+      _trainingProgress = (response.data['progress'] ?? 0.0).toDouble();
+      _isModelAvailable = response.data['model_available'] ?? false;
+      
       return response.data;
     } on DioException catch (e) {
       print('Error checking training status: ${e.message}');
       return {
-        'training_in_progress': false,
-        'progress': 0.0,
-        'model_available': false
+        'training_in_progress': _isModelTraining,
+        'progress': _trainingProgress,
+        'model_available': _isModelAvailable
       };
     }
   }
