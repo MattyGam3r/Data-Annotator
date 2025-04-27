@@ -161,11 +161,18 @@ class YOLOModel:
             else:
                 model = YOLO('yolov8n.pt')  # Use YOLOv8 nano as base model
             
-            # Setup progress callback
-            def progress_callback(progress):
+            # Define a custom callback function to update progress
+            def on_train_epoch_end(trainer):
                 global TRAINING_PROGRESS
+                total_epochs = trainer.epochs
+                current_epoch = trainer.epoch + 1  # +1 because epochs are 0-indexed
+                progress = current_epoch / total_epochs
                 with LOCK:
                     TRAINING_PROGRESS = progress
+                print(f"Training progress: {progress:.2f} - Epoch {current_epoch}/{total_epochs}")
+            
+            # Register the callback with the YOLO model
+            model.add_callback("on_train_epoch_end", on_train_epoch_end)
             
             # Train the model
             model.train(
@@ -173,7 +180,7 @@ class YOLOModel:
                 epochs=50,
                 imgsz=640,
                 batch=16,
-                patience=10,
+                patience=0,  # Set to 0 to disable early stopping
                 project='model',
                 name='training',
                 exist_ok=True

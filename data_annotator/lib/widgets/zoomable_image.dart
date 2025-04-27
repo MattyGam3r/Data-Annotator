@@ -24,6 +24,117 @@ class _ZoomableImageState extends State<ZoomableImage> {
   Offset? _startPoint;
   Offset? _currentPoint;
   
+  // Store the image size and container size for proper coordinate mapping
+  Size _imageSize = Size.zero;
+  Size _containerSize = Size.zero;
+  bool _imageLoaded = false;
+  
+  @override
+  void initState() {
+    super.initState();
+    // Preload the image to get its dimensions
+    _loadImage();
+  }
+  
+  @override
+  void didUpdateWidget(ZoomableImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.imageUrl != widget.imageUrl) {
+      _imageLoaded = false;
+      _loadImage();
+    }
+  }
+  
+  void _loadImage() {
+    final imageProvider = NetworkImage(widget.imageUrl);
+    imageProvider.resolve(ImageConfiguration()).addListener(
+      ImageStreamListener((info, _) {
+        setState(() {
+          _imageSize = Size(
+            info.image.width.toDouble(),
+            info.image.height.toDouble(),
+          );
+          _imageLoaded = true;
+        });
+      })
+    );
+  }
+  
+  // Convert normalized coordinates (0-1) to container coordinates
+  Rect _normalizedToContainer(BoundingBox box, Size containerSize) {
+    // Calculate image display size within container
+    double displayWidth = containerSize.width;
+    double displayHeight = containerSize.height;
+    
+    if (_imageLoaded && _imageSize != Size.zero) {
+      final imageAspectRatio = _imageSize.width / _imageSize.height;
+      final containerAspectRatio = containerSize.width / containerSize.height;
+      
+      if (imageAspectRatio > containerAspectRatio) {
+        // Image is wider than container
+        displayHeight = containerSize.width / imageAspectRatio;
+      } else {
+        // Image is taller than container
+        displayWidth = containerSize.height * imageAspectRatio;
+      }
+    }
+    
+    // Calculate offset to center the image
+    final horizontalOffset = (containerSize.width - displayWidth) / 2;
+    final verticalOffset = (containerSize.height - displayHeight) / 2;
+    
+    return Rect.fromLTWH(
+      horizontalOffset + box.x * displayWidth,
+      verticalOffset + box.y * displayHeight,
+      box.width * displayWidth,
+      box.height * displayHeight,
+    );
+  }
+  
+  // Convert container coordinates to normalized coordinates (0-1)
+  BoundingBox _containerToNormalized(Offset topLeft, Offset bottomRight, Size containerSize) {
+    // Calculate image display size within container
+    double displayWidth = containerSize.width;
+    double displayHeight = containerSize.height;
+    
+    if (_imageLoaded && _imageSize != Size.zero) {
+      final imageAspectRatio = _imageSize.width / _imageSize.height;
+      final containerAspectRatio = containerSize.width / containerSize.height;
+      
+      if (imageAspectRatio > containerAspectRatio) {
+        // Image is wider than container
+        displayHeight = containerSize.width / imageAspectRatio;
+      } else {
+        // Image is taller than container
+        displayWidth = containerSize.height * imageAspectRatio;
+      }
+    }
+    
+    // Calculate offset to center the image
+    final horizontalOffset = (containerSize.width - displayWidth) / 2;
+    final verticalOffset = (containerSize.height - displayHeight) / 2;
+    
+    // Adjust coordinates to account for image position
+    double x = (topLeft.dx - horizontalOffset) / displayWidth;
+    double y = (topLeft.dy - verticalOffset) / displayHeight;
+    double width = (bottomRight.dx - topLeft.dx) / displayWidth;
+    double height = (bottomRight.dy - topLeft.dy) / displayHeight;
+    
+    // Clamp values to be within 0-1 range
+    x = x.clamp(0.0, 1.0);
+    y = y.clamp(0.0, 1.0);
+    width = width.clamp(0.0, 1.0 - x);
+    height = height.clamp(0.0, 1.0 - y);
+    
+    return BoundingBox(
+      x: x,
+      y: y,
+      width: width,
+      height: height,
+      label: "",
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
@@ -50,36 +161,26 @@ class _ZoomableImageState extends State<ZoomableImage> {
         if (_isDrawing && _startPoint != null && _currentPoint != null && widget.onBoxDrawn != null) {
           // Get the size of the image container
           final RenderBox box = context.findRenderObject() as RenderBox;
-          final size = box.size;
+          final containerSize = box.size;
+          _containerSize = containerSize;
           
-          // Calculate the normalized coordinates (0-1)
+          // Ensure correct order of coordinates
           Offset topLeft = Offset(
-            (_startPoint!.dx / size.width).clamp(0.0, 1.0),
-            (_startPoint!.dy / size.height).clamp(0.0, 1.0),
+            _startPoint!.dx < _currentPoint!.dx ? _startPoint!.dx : _currentPoint!.dx,
+            _startPoint!.dy < _currentPoint!.dy ? _startPoint!.dy : _currentPoint!.dy,
           );
           
           Offset bottomRight = Offset(
-            (_currentPoint!.dx / size.width).clamp(0.0, 1.0),
-            (_currentPoint!.dy / size.height).clamp(0.0, 1.0),
+            _startPoint!.dx > _currentPoint!.dx ? _startPoint!.dx : _currentPoint!.dx,
+            _startPoint!.dy > _currentPoint!.dy ? _startPoint!.dy : _currentPoint!.dy,
           );
           
-          // Ensure the coordinates are ordered properly
-          double x = topLeft.dx < bottomRight.dx ? topLeft.dx : bottomRight.dx;
-          double y = topLeft.dy < bottomRight.dy ? topLeft.dy : bottomRight.dy;
-          double width = (bottomRight.dx - topLeft.dx).abs();
-          double height = (bottomRight.dy - topLeft.dy).abs();
+          // Convert to normalized coordinates
+          final normalizedBox = _containerToNormalized(topLeft, bottomRight, containerSize);
           
           // Only create a box if it has a minimum size
-          if (width > 0.01 && height > 0.01) {
-            // Create and pass the new bounding box to the parent
-            final box = BoundingBox(
-              x: x,
-              y: y,
-              width: width,
-              height: height,
-              label: "",
-            );
-            widget.onBoxDrawn?.call(box);
+          if (normalizedBox.width > 0.01 && normalizedBox.height > 0.01) {
+            widget.onBoxDrawn?.call(normalizedBox);
           }
         }
         
@@ -93,6 +194,7 @@ class _ZoomableImageState extends State<ZoomableImage> {
         color: Colors.black12,
         child: LayoutBuilder(
           builder: (context, constraints) {
+            _containerSize = Size(constraints.maxWidth, constraints.maxHeight);
             return Stack(
               children: [
                 // The image itself
@@ -110,11 +212,13 @@ class _ZoomableImageState extends State<ZoomableImage> {
                 // Existing bounding boxes
                 ...widget.boxes.map((box) {
                   final color = _getBoxColor(box);
+                  final boxRect = _normalizedToContainer(box, _containerSize);
+                  
                   return Positioned(
-                    left: box.x * constraints.maxWidth,
-                    top: box.y * constraints.maxHeight,
-                    width: box.width * constraints.maxWidth,
-                    height: box.height * constraints.maxHeight,
+                    left: boxRect.left,
+                    top: boxRect.top,
+                    width: boxRect.width,
+                    height: boxRect.height,
                     child: Container(
                       decoration: BoxDecoration(
                         border: Border.all(
@@ -136,6 +240,7 @@ class _ZoomableImageState extends State<ZoomableImage> {
                                 fontSize: 12,
                                 fontWeight: FontWeight.bold,
                               ),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                           if (box.source == AnnotationSource.ai)
