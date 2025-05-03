@@ -1,5 +1,6 @@
 {
     "cmake.sourceDirectory": "/home/matthew/Github/Data-Annotator/data_annotator/linux",
     "git.terminalAuthentication": false,
-    "github.gitAuthentication": false
+    "github.gitAuthentication": false,
+    "cmake.ignoreCMakeListsMissing": true
 }

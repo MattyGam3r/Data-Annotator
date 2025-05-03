@@ -140,7 +140,24 @@ def predict():
         return jsonify({"error": "Filename is required"}), 400
     
     predictions = YOLOModel.predict(filename)
+     # Convert NumPy types to native Python types for JSON serialization
+    def convert_numpy_types(obj):
+        import numpy as np
+        if isinstance(obj, dict):
+            return {k: convert_numpy_types(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_numpy_types(i) for i in obj]
+        elif isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return convert_numpy_types(obj.tolist())
+        else:
+            return obj
     
+    # Convert all NumPy types to native Python types
+    predictions = convert_numpy_types(predictions)
     return jsonify({"predictions": predictions})
 
 @app.route("/mark_complete", methods=["POST"])

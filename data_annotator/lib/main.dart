@@ -445,6 +445,7 @@ Widget build(BuildContext context) {
                           child: ZoomableImage(
                             imageUrl: widget.selectedImageUrl!,
                             boxes: widget.currentBoxes,
+                            selectedTag: widget.selectedTag,
                             onBoxDrawn: (box) {
                               if (widget.onBoxAdded != null) {
                                 // If a tag is selected, use it automatically

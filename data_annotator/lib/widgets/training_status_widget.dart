@@ -64,6 +64,10 @@ class _TrainingStatusWidgetState extends State<TrainingStatusWidget> {
         border: Border.all(color: Colors.grey.shade300),
       ),
       padding: EdgeInsets.all(16),
+      constraints: BoxConstraints(
+        minWidth: 200,
+        maxWidth: 300,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -80,10 +84,13 @@ class _TrainingStatusWidgetState extends State<TrainingStatusWidget> {
                 color: _modelAvailable ? Colors.green : Colors.orange,
               ),
               SizedBox(width: 8),
-              Text(
-                _modelAvailable 
-                    ? "Model is available for predictions" 
-                    : "No trained model available yet",
+              Expanded(
+                child: Text(
+                  _modelAvailable 
+                      ? "Model is available for predictions" 
+                      : "No trained model available yet",
+                  softWrap: true,
+                ),
               ),
             ],
           ),
