@@ -1,0 +1,57 @@
+# Python Backend
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+.venv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Docker
+.docker/
+docker-compose.override.yml
+
+# Backend specific
+backend/uploads/
+backend/metadata.db
+backend/model/
+backend/datasets/
+backend/yolov8n.pt
+
+# Flutter/Dart Frontend
+data_annotator/build/
+data_annotator/.dart_tool/
+data_annotator/.flutter-plugins
+data_annotator/.flutter-plugins-dependencies
+data_annotator/.metadata
+data_annotator/.packages
+data_annotator/.pub-cache/
+data_annotator/.pub/
+data_annotator/build/
+
+# Logs
+*.log
+logs/
+
+
+# Environment variables
+.env
+.env.local
+.env.*.local 
