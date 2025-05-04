@@ -9,6 +9,12 @@ import torch
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from ultralytics import YOLO
+from image_augmenter import ImageAugmenter
+import logging
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Global variables to track model status
 MODEL_PATH = 'model/best.pt'
@@ -38,8 +44,11 @@ class YOLOModel:
     
     @staticmethod
     def prepare_data(images_data):
-        """Prepare dataset for YOLO training"""
+        """Prepare dataset for YOLO training with augmented data"""
+        logger.info("Starting data preparation")
+        
         # Clear previous dataset
+        logger.info("Clearing previous dataset")
         shutil.rmtree('datasets/train/images', ignore_errors=True)
         shutil.rmtree('datasets/train/labels', ignore_errors=True)
         shutil.rmtree('datasets/val/images', ignore_errors=True)
@@ -51,21 +60,23 @@ class YOLOModel:
         os.makedirs('datasets/val/labels', exist_ok=True)
         
         # Create class mapping for the labels
+        logger.info("Creating class mapping")
         classes = set()
         for img in images_data:
             for box in img.get('boundingBoxes', []):
-                # Only include verified boxes
                 if box.get('isVerified', False):
                     classes.add(box.get('label'))
         
         class_names = sorted(list(classes))
         class_map = {name: idx for idx, name in enumerate(class_names)}
+        logger.info(f"Found {len(class_map)} classes: {class_names}")
         
         # Save class mapping
         with open('model/classes.json', 'w') as f:
             json.dump(class_map, f)
         
         # Split data: 80% training, 20% validation
+        logger.info("Splitting data into training and validation sets")
         np.random.seed(42)
         train_indices = np.random.choice(
             len(images_data), 
@@ -73,54 +84,111 @@ class YOLOModel:
             replace=False
         )
         train_set = set(train_indices)
+        logger.info(f"Split: {len(train_set)} training images, {len(images_data) - len(train_set)} validation images")
         
-        for i, img_data in enumerate(images_data):
-            # Only process images with verified boxes
-            verified_boxes = [box for box in img_data.get('boundingBoxes', []) 
-                             if box.get('isVerified', False)]
-            
-            if not verified_boxes:
-                continue
-                
-            filename = img_data.get('filepath')
-            if not filename:
-                continue
-                
-            # Source and destination paths
-            src_path = os.path.join('uploads', filename)
-            
-            if not os.path.exists(src_path):
-                continue
-                
-            # Determine if this is for train or validation
-            if i in train_set:
-                img_dest = os.path.join('datasets/train/images', filename)
-                label_dest = os.path.join('datasets/train/labels', os.path.splitext(filename)[0] + '.txt')
-            else:
-                img_dest = os.path.join('datasets/val/images', filename)
-                label_dest = os.path.join('datasets/val/labels', os.path.splitext(filename)[0] + '.txt')
-            
-            # Copy image file
-            shutil.copy2(src_path, img_dest)
-            
-            # Convert annotations to YOLO format and save
-            with open(label_dest, 'w') as f:
-                for box in verified_boxes:
-                    # YOLO format: class_id center_x center_y width height
-                    # All values are normalized [0-1]
-                    class_id = class_map.get(box.get('label', ''), 0)
-                    x = box.get('x', 0.0)
-                    y = box.get('y', 0.0)
-                    w = box.get('width', 0.0)
-                    h = box.get('height', 0.0)
-                    
-                    # Convert to center coordinates
-                    center_x = x + w/2
-                    center_y = y + h/2
-                    
-                    f.write(f"{class_id} {center_x} {center_y} {w} {h}\n")
+        successful_train_images = 0
+        successful_val_images = 0
         
+        # Process in batches to be more memory efficient
+        logger.info("Processing images in batches")
+        batch_size = 5  # Process 5 images at a time
+        
+        for batch_start in range(0, len(images_data), batch_size):
+            batch_end = min(batch_start + batch_size, len(images_data))
+            logger.info(f"Processing batch {batch_start // batch_size + 1}, images {batch_start}-{batch_end-1}")
+            
+            for i in range(batch_start, batch_end):
+                img_data = images_data[i]
+                
+                # Only process images with verified boxes
+                verified_boxes = [box for box in img_data.get('boundingBoxes', []) 
+                                if box.get('isVerified', False)]
+                
+                if not verified_boxes:
+                    logger.warning(f"No verified boxes in image {i}, skipping")
+                    continue
+                    
+                filename = img_data.get('filepath')
+                if not filename:
+                    logger.warning(f"No filename for image {i}, skipping")
+                    continue
+                    
+                # Source and destination paths
+                src_path = os.path.join('uploads', filename)
+                
+                if not os.path.exists(src_path):
+                    logger.warning(f"Source image not found: {src_path}, skipping")
+                    continue
+                    
+                # Determine if this is for train or validation
+                if i in train_set:
+                    logger.info(f"Processing training image: {filename}")
+                    img_dest = os.path.join('datasets/train/images', filename)
+                    label_dest = os.path.join('datasets/train/labels', os.path.splitext(filename)[0] + '.txt')
+                    
+                    # Prepare bboxes and class labels for augmentation
+                    bboxes = []
+                    class_labels = []
+                    for box in verified_boxes:
+                        class_id = class_map.get(box.get('label', ''), 0)
+                        x = box.get('x', 0.0)
+                        y = box.get('y', 0.0)
+                        w = box.get('width', 0.0)
+                        h = box.get('height', 0.0)
+                        
+                        # Convert to center coordinates
+                        center_x = x + w/2
+                        center_y = y + h/2
+                        
+                        bboxes.append([center_x, center_y, w, h])
+                        class_labels.append(class_id)
+                    
+                    # Use ImageAugmenter to create augmented dataset (using only 1 augmentation to save memory)
+                    if ImageAugmenter.create_augmented_dataset(
+                        src_path,
+                        bboxes,
+                        class_labels,
+                        img_dest,
+                        label_dest,
+                        num_augmentations=1  # Reduced from 3 to save memory
+                    ):
+                        successful_train_images += 1
+                        logger.info(f"Successfully processed training image: {filename}")
+                    else:
+                        logger.error(f"Failed to process training image: {filename}")
+                else:
+                    logger.info(f"Processing validation image: {filename}")
+                    # For validation, just copy the original image and annotations
+                    img_dest = os.path.join('datasets/val/images', filename)
+                    label_dest = os.path.join('datasets/val/labels', os.path.splitext(filename)[0] + '.txt')
+                    
+                    try:
+                        shutil.copy2(src_path, img_dest)
+                        
+                        with open(label_dest, 'w') as f:
+                            for box in verified_boxes:
+                                class_id = class_map.get(box.get('label', ''), 0)
+                                x = box.get('x', 0.0)
+                                y = box.get('y', 0.0)
+                                w = box.get('width', 0.0)
+                                h = box.get('height', 0.0)
+                                
+                                center_x = x + w/2
+                                center_y = y + h/2
+                                
+                                f.write(f"{class_id} {center_x} {center_y} {w} {h}\n")
+                        
+                        successful_val_images += 1
+                        logger.info(f"Successfully processed validation image: {filename}")
+                    except Exception as e:
+                        logger.error(f"Error processing validation image {filename}: {str(e)}", exc_info=True)
+            
+            # Force garbage collection after each batch
+            import gc
+            gc.collect()
+
         # Create dataset.yaml for YOLO
+        logger.info("Creating dataset configuration")
         dataset_config = {
             'path': os.path.abspath('datasets'),
             'train': 'train/images',
@@ -136,7 +204,8 @@ class YOLOModel:
                 else:
                     f.write(f"{key}: {value}\n")
         
-        return len(train_set) > 0
+        logger.info(f"Data preparation completed. Successfully processed {successful_train_images} training images and {successful_val_images} validation images")
+        return successful_train_images > 0 and successful_val_images > 0
 
     @staticmethod
     def train_model_thread(images_data):
@@ -144,22 +213,28 @@ class YOLOModel:
         global TRAINING_IN_PROGRESS, TRAINING_PROGRESS, MODEL_AVAILABLE
         
         try:
+            logger.info("Starting model training thread")
             with LOCK:
                 TRAINING_IN_PROGRESS = True
                 TRAINING_PROGRESS = 0.0
             
             # Prepare the data
+            logger.info("Preparing training data")
             data_ready = YOLOModel.prepare_data(images_data)
             if not data_ready:
+                logger.error("Data preparation failed")
                 with LOCK:
                     TRAINING_IN_PROGRESS = False
                 return
             
             # Create or load model
+            logger.info("Loading YOLO model")
             if os.path.exists(MODEL_PATH):
                 model = YOLO(MODEL_PATH)
+                logger.info("Loaded existing model")
             else:
                 model = YOLO('yolov8n.pt')  # Use YOLOv8 nano as base model
+                logger.info("Created new model from base")
             
             # Define a custom callback function to update progress
             def on_train_epoch_end(trainer):
@@ -169,27 +244,34 @@ class YOLOModel:
                 progress = current_epoch / total_epochs
                 with LOCK:
                     TRAINING_PROGRESS = progress
-                print(f"Training progress: {progress:.2f} - Epoch {current_epoch}/{total_epochs}")
+                logger.info(f"Training progress: {progress:.2f} - Epoch {current_epoch}/{total_epochs}")
             
             # Register the callback with the YOLO model
             model.add_callback("on_train_epoch_end", on_train_epoch_end)
             
-            # Train the model
+            # Use a memory-efficient approach for training
+            logger.info("Starting model training with memory-efficient settings")
             model.train(
                 data='datasets/dataset.yaml',
                 epochs=50,
                 imgsz=640,
-                batch=16,
-                patience=0,  # Set to 0 to disable early stopping
+                batch=12,
+                patience=0,
                 project='model',
                 name='training',
-                exist_ok=True
+                exist_ok=True,
+                verbose=True,
+                workers=0,
             )
             
             # Copy the best model
+            logger.info("Training completed, copying best model")
             best_model = os.path.join('model', 'training', 'weights', 'best.pt')
             if os.path.exists(best_model):
                 shutil.copy2(best_model, MODEL_PATH)
+                logger.info("Best model copied successfully")
+            else:
+                logger.warning("Best model not found")
             
             with LOCK:
                 TRAINING_IN_PROGRESS = False
@@ -197,7 +279,7 @@ class YOLOModel:
                 TRAINING_PROGRESS = 1.0
                 
         except Exception as e:
-            print(f"Error training model: {e}")
+            logger.error(f"Error training model: {str(e)}", exc_info=True)
             with LOCK:
                 TRAINING_IN_PROGRESS = False
     
