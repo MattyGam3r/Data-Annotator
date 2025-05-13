@@ -62,8 +62,8 @@ class _AugmentedImagesViewerState extends State<AugmentedImagesViewer> {
     if (url.startsWith('http')) {
       return url;
     }
-    // Otherwise, prepend the base URL
-    return 'http://localhost:5001$url';
+    // Otherwise, prepend the base URL and add a timestamp to prevent caching
+    return 'http://localhost:5001$url?t=${DateTime.now().millisecondsSinceEpoch}';
   }
 
   List<BoundingBox> _parseAnnotations(String? annotationsJson) {
@@ -97,9 +97,18 @@ class _AugmentedImagesViewerState extends State<AugmentedImagesViewer> {
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.close),
-                  onPressed: widget.onClose,
+                Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.refresh),
+                      onPressed: _loadAugmentedImages,
+                      tooltip: 'Refresh augmented images',
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: widget.onClose,
+                    ),
+                  ],
                 ),
               ],
             ),

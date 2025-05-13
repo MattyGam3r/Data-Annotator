@@ -186,13 +186,12 @@ def get_augmented_images(filename):
                 if aug_file.startswith(f"{base_name}_aug") and aug_file.endswith(os.path.splitext(filename)[1]):
                     print(f"Found matching augmented file: {aug_file}")
                     
-                    # Copy the augmented image to uploads if it doesn't exist there
+                    # Always copy the augmented image to uploads to ensure we have the latest version
                     src_path = os.path.join(train_dir, aug_file)
                     dst_path = os.path.join('uploads', aug_file)
-                    if not os.path.exists(dst_path):
-                        print(f"Copying {aug_file} to uploads directory")
-                        import shutil
-                        shutil.copy2(src_path, dst_path)
+                    print(f"Copying {aug_file} to uploads directory")
+                    import shutil
+                    shutil.copy2(src_path, dst_path)
                     
                     # Get annotations for the augmented image
                     # For augmented images, the label file should be like 'dog_aug0.txt'
