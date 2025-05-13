@@ -8,6 +8,7 @@ import 'widgets/zoomable_image.dart';
 import 'widgets/frequent_tags_panel.dart';
 import 'http-requests.dart';
 import 'widgets/training_status_widget.dart';
+import 'widgets/augmented_images_viewer.dart';
 
 void main() {
   runApp(const MainApp());
@@ -405,6 +406,20 @@ Widget build(BuildContext context) {
               if (widget.selectedImageUrl != null)
                 Row(
                   children: [
+                    ElevatedButton.icon(
+                      onPressed: () {
+                        showDialog(
+                          context: context,
+                          builder: (context) => AugmentedImagesViewer(
+                            imageUrl: widget.selectedImageUrl!,
+                            onClose: () => Navigator.pop(context),
+                          ),
+                        );
+                      },
+                      icon: Icon(Icons.auto_awesome),
+                      label: Text('View Augmented'),
+                    ),
+                    SizedBox(width: 8),
                     ElevatedButton.icon(
                       onPressed: _isMarkingComplete ? null : _markImageComplete,
                       icon: _isMarkingComplete 

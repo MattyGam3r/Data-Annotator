@@ -121,4 +121,29 @@ class YoloService {
       };
     }
   }
+
+  // Get augmented versions of an image
+  Future<List<Map<String, dynamic>>?> getAugmentedImages(String imageFilename) async {
+    try {
+      // Extract just the filename from the URL
+      String extractedFilename = imageFilename.split('/').last;
+      
+      final response = await _dio.get(
+        '$baseUrl/get_augmented_images/$extractedFilename',
+      );
+      
+      if (response.statusCode == 200 && response.data['images'] != null) {
+        List<dynamic> images = response.data['images'];
+        return images.map((img) => {
+          'url': img['url'],
+          'is_original': img['is_original'],
+          'annotations': img['annotations']  // Include annotations in the response
+        }).toList();
+      }
+      return null;
+    } on DioException catch (e) {
+      print('Error getting augmented images: ${e.message}');
+      return null;
+    }
+  }
 }

@@ -130,6 +130,166 @@ def train_model():
     else:
         return jsonify({"error": "Training already in progress"}), 400
 
+@app.route("/get_augmented_images/<filename>", methods=["GET"])
+def get_augmented_images(filename):
+    """Get all augmented versions of an image"""
+    print(f"Getting augmented images for {filename}")
+    conn = None
+    try:
+        # Get the base image path
+        base_path = os.path.join('uploads', filename)
+        if not os.path.exists(base_path):
+            print(f"Base image not found at {base_path}")
+            return jsonify({"error": "Image not found"}), 404
+            
+        # Get all augmented versions
+        augmented_images = []
+        
+        # Add the original image with its annotations
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
+        c.execute("SELECT annotations FROM images WHERE filename = ?", (filename,))
+        row = c.fetchone()
+        original_annotations = row[0] if row else None
+        print(f"Original annotations: {original_annotations}")
+        
+        # Get class names from original annotations
+        class_names = {}
+        if original_annotations:
+            try:
+                original_boxes = json.loads(original_annotations)
+                for i, box in enumerate(original_boxes):
+                    class_names[i] = box.get('label', f'class_{i}')
+                print(f"Class names mapping: {class_names}")
+            except Exception as e:
+                print(f"Error parsing original annotations: {str(e)}")
+        
+        augmented_images.append({
+            'url': f'/uploads/{filename}',
+            'is_original': True,
+            'annotations': original_annotations
+        })
+        
+        # Look for augmented versions in the training dataset
+        train_dir = 'datasets/train/images'
+        labels_dir = 'datasets/train/labels'
+        print(f"Checking directories: {train_dir} and {labels_dir}")
+        print(f"Train dir exists: {os.path.exists(train_dir)}")
+        print(f"Labels dir exists: {os.path.exists(labels_dir)}")
+        
+        if os.path.exists(train_dir) and os.path.exists(labels_dir):
+            base_name = os.path.splitext(filename)[0]
+            print(f"Looking for augmented files starting with {base_name}_aug")
+            
+            for aug_file in os.listdir(train_dir):
+                print(f"Checking file: {aug_file}")
+                if aug_file.startswith(f"{base_name}_aug") and aug_file.endswith(os.path.splitext(filename)[1]):
+                    print(f"Found matching augmented file: {aug_file}")
+                    
+                    # Copy the augmented image to uploads if it doesn't exist there
+                    src_path = os.path.join(train_dir, aug_file)
+                    dst_path = os.path.join('uploads', aug_file)
+                    if not os.path.exists(dst_path):
+                        print(f"Copying {aug_file} to uploads directory")
+                        import shutil
+                        shutil.copy2(src_path, dst_path)
+                    
+                    # Get annotations for the augmented image
+                    # For augmented images, the label file should be like 'dog_aug0.txt'
+                    aug_label_file = os.path.join(labels_dir, os.path.splitext(aug_file)[0] + '.txt')
+                    print(f"Looking for label file: {aug_label_file}")
+                    annotations = None
+                    
+                    # Try both the exact filename and the base name
+                    possible_label_files = [
+                        aug_label_file,  # Try with augmented filename (e.g., dog_aug0.txt)
+                        os.path.join(labels_dir, os.path.splitext(filename)[0] + '.txt')  # Try with original filename (e.g., dog.txt)
+                    ]
+                    
+                    print(f"Trying possible label files: {possible_label_files}")
+                    
+                    for label_file in possible_label_files:
+                        print(f"Trying label file: {label_file}")
+                        if os.path.exists(label_file):
+                            print(f"Found label file: {label_file}")
+                            boxes = []
+                            with open(label_file, 'r') as f:
+                                content = f.read()
+                                print(f"Raw label file content:\n{content}")
+                                f.seek(0)  # Reset file pointer to beginning
+                                for line_num, line in enumerate(f, 1):
+                                    try:
+                                        parts = line.strip().split()
+                                        print(f"Line {line_num} - Raw parts: {parts}")
+                                        if len(parts) >= 5:
+                                            # Convert class_id from float to int
+                                            class_id = int(float(parts[0]))
+                                            x_center = float(parts[1])
+                                            y_center = float(parts[2])
+                                            width = float(parts[3])
+                                            height = float(parts[4])
+                                            
+                                            print(f"Line {line_num} - Parsed values:")
+                                            print(f"  class_id: {class_id}")
+                                            print(f"  x_center: {x_center}")
+                                            print(f"  y_center: {y_center}")
+                                            print(f"  width: {width}")
+                                            print(f"  height: {height}")
+                                            
+                                            # Convert from YOLO format (center x, center y, width, height)
+                                            # to our format (top-left x, top-left y, width, height)
+                                            x = x_center - width/2
+                                            y = y_center - height/2
+                                            
+                                            print(f"Line {line_num} - Converted coordinates:")
+                                            print(f"  x: {x}")
+                                            print(f"  y: {y}")
+                                            print(f"  width: {width}")
+                                            print(f"  height: {height}")
+                                            
+                                            # Get class name from our mapping
+                                            label = class_names.get(class_id, f'class_{class_id}')
+                                            print(f"Line {line_num} - Using label: {label}")
+                                            
+                                            box = {
+                                                'x': x,
+                                                'y': y,
+                                                'width': width,
+                                                'height': height,
+                                                'label': label,
+                                                'source': 'ai',
+                                                'confidence': 1.0,
+                                                'isVerified': True
+                                            }
+                                            print(f"Line {line_num} - Created box: {box}")
+                                            boxes.append(box)
+                                    except Exception as e:
+                                        print(f"Error parsing line {line_num}: {line}")
+                                        print(f"Error details: {str(e)}")
+                                        continue
+                            if boxes:
+                                annotations = json.dumps(boxes)
+                                print(f"Final annotations JSON: {annotations}")
+                                break  # Stop looking if we found valid annotations
+                            else:
+                                print("No valid boxes were created from the label file")
+                    
+                    augmented_images.append({
+                        'url': f'/uploads/{aug_file}',
+                        'is_original': False,
+                        'annotations': annotations
+                    })
+        
+        if conn:
+            conn.close()
+        print(f"Returning {len(augmented_images)} images")
+        return jsonify({"images": augmented_images})
+    except Exception as e:
+        if conn:
+            conn.close()
+        print(f"Error in get_augmented_images: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/predict", methods=["POST"])
 def predict():
     """Get predictions for an image"""
