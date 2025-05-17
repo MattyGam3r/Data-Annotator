@@ -2,16 +2,30 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'structs.dart';
 
+enum ModelType {
+  yolo,
+  fewShot,
+}
+
 class YoloService {
   final Dio _dio = Dio();
   final String baseUrl = 'http://localhost:5001';
   static bool _isModelTraining = false;
   static bool _isModelAvailable = false;
   static double _trainingProgress = 0.0;
+  static ModelType _currentModelType = ModelType.yolo;
+
+  ModelType get currentModelType => _currentModelType;
+  set currentModelType(ModelType type) {
+    _currentModelType = type;
+  }
 
   Future<bool> isModelAvailable() async {
     try {
-      final response = await _dio.get('$baseUrl/model_status');
+      final response = await _dio.get(
+        '$baseUrl/model_status',
+        queryParameters: {'model_type': _currentModelType == ModelType.yolo ? 'yolo' : 'few_shot'},
+      );
       _isModelAvailable = response.data['model_available'] ?? false;
       return _isModelAvailable;
     } on DioException catch (e) {
@@ -22,7 +36,10 @@ class YoloService {
 
   Future<bool> isModelTraining() async {
     try {
-      final response = await _dio.get('$baseUrl/model_status');
+      final response = await _dio.get(
+        '$baseUrl/model_status',
+        queryParameters: {'model_type': _currentModelType == ModelType.yolo ? 'yolo' : 'few_shot'},
+      );
       _isModelTraining = response.data['training_in_progress'] ?? false;
       _trainingProgress = (response.data['progress'] ?? 0.0).toDouble();
       return _isModelTraining;
@@ -32,7 +49,7 @@ class YoloService {
     }
   }
 
-  // Train YOLO model with verified annotations
+  // Train model with verified annotations
   Future<bool> trainModel(List<AnnotatedImage> annotatedImages) async {
     // Filter only images with verified annotations
     final trainingImages = annotatedImages.where((image) {
@@ -51,6 +68,7 @@ class YoloService {
         '$baseUrl/train_model',
         data: {
           'images': trainingImages.map((img) => img.toJson()).toList(),
+          'model_type': _currentModelType == ModelType.yolo ? 'yolo' : 'few_shot',
         },
       );
       
@@ -76,7 +94,10 @@ class YoloService {
       
       final response = await _dio.post(
         '$baseUrl/predict',
-        data: {'filename': extractedFilename},
+        data: {
+          'filename': extractedFilename,
+          'model_type': _currentModelType == ModelType.yolo ? 'yolo' : 'few_shot',
+        },
       );
       
       if (response.statusCode == 200 && response.data['predictions'] != null) {
@@ -104,7 +125,10 @@ class YoloService {
   // Check training status
   Future<Map<String, dynamic>> getTrainingStatus() async {
     try {
-      final response = await _dio.get('$baseUrl/model_status');
+      final response = await _dio.get(
+        '$baseUrl/model_status',
+        queryParameters: {'model_type': _currentModelType == ModelType.yolo ? 'yolo' : 'few_shot'},
+      );
       
       // Update our cached values
       _isModelTraining = response.data['training_in_progress'] ?? false;

@@ -68,6 +68,7 @@ class _HomePageState extends State<HomePage> {
   // Added for tracking tag frequencies
   Map<String, int> tagFrequencies = {};
   String? selectedTag;
+  final YoloService _yoloService = YoloService();
 
   @override
   void initState() {
@@ -304,16 +305,16 @@ class ImageLabellerArea extends StatefulWidget {
 
 class _ImageLabellerAreaState extends State<ImageLabellerArea> {
   final TextEditingController _labelController = TextEditingController();
+  final YoloService _yoloService = YoloService();
   bool _isSaving = false;
+  bool _isMarkingComplete = false;
   
   @override
   void dispose() {
     _labelController.dispose();
     super.dispose();
   }
-  bool _isMarkingComplete = false;
 
-// Add this method to _ImageLabellerAreaState
 Future<void> _markImageComplete() async {
   if (widget.selectedImageUrl == null) return;
   
@@ -397,11 +398,34 @@ Widget build(BuildContext context) {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                widget.selectedImageUrl == null 
-                    ? "Select an image from the left panel" 
-                    : "Selected Image:",
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              Row(
+                children: [
+                  Text(
+                    widget.selectedImageUrl == null 
+                        ? "Select an image from the left panel" 
+                        : "Selected Image:",
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  if (widget.selectedImageUrl != null) ...[
+                    SizedBox(width: 16),
+                    DropdownButton<ModelType>(
+                      value: _yoloService.currentModelType,
+                      items: ModelType.values.map((type) {
+                        return DropdownMenuItem(
+                          value: type,
+                          child: Text(type == ModelType.yolo ? 'YOLO' : 'Few-Shot'),
+                        );
+                      }).toList(),
+                      onChanged: (type) {
+                        if (type != null) {
+                          setState(() {
+                            _yoloService.currentModelType = type;
+                          });
+                        }
+                      },
+                    ),
+                  ],
+                ],
               ),
               if (widget.selectedImageUrl != null)
                 Row(

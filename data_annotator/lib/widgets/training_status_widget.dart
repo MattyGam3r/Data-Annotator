@@ -57,58 +57,32 @@ class _TrainingStatusWidgetState extends State<TrainingStatusWidget> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.grey.shade100,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: Colors.grey.shade300),
-      ),
-      padding: EdgeInsets.all(16),
-      constraints: BoxConstraints(
-        minWidth: 200,
-        maxWidth: 300,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            "AI Model Status",
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-          ),
-          SizedBox(height: 12),
-          Row(
-            children: [
-              Icon(
-                _modelAvailable ? Icons.check_circle : Icons.info_outline,
-                color: _modelAvailable ? Colors.green : Colors.orange,
-              ),
-              SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _modelAvailable 
-                      ? "Model is available for predictions" 
-                      : "No trained model available yet",
-                  softWrap: true,
-                ),
-              ),
-            ],
-          ),
-          if (_isTraining) ...[
-            SizedBox(height: 12),
-            Text("Training in progress:"),
-            SizedBox(height: 8),
-            LinearProgressIndicator(
-              value: _progress,
-              backgroundColor: Colors.grey.shade300,
-              valueColor: AlwaysStoppedAnimation<Color>(
-                Theme.of(context).colorScheme.primary,
-              ),
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Model Status',
+              style: Theme.of(context).textTheme.titleLarge,
             ),
-            SizedBox(height: 4),
-            Text("${(_progress * 100).toStringAsFixed(1)}%"),
+            const SizedBox(height: 16),
+            if (_isTraining) ...[
+              LinearProgressIndicator(value: _progress),
+              const SizedBox(height: 8),
+              Text('Training in progress: ${(_progress * 100).toStringAsFixed(1)}%'),
+            ] else if (_modelAvailable) ...[
+              const Icon(Icons.check_circle, color: Colors.green),
+              const SizedBox(height: 8),
+              Text('Model is ready for predictions'),
+            ] else ...[
+              const Icon(Icons.warning, color: Colors.orange),
+              const SizedBox(height: 8),
+              Text('No trained model available'),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }

@@ -5,6 +5,7 @@ from flask import Flask, jsonify, Response, request, render_template, send_from_
 from flask_cors import CORS, cross_origin
 from werkzeug import utils
 from yolo_model import YOLOModel
+from few_shot_model import FewShotModelTrainer
 
 app = Flask(__name__)
 cors = CORS(app, 
@@ -114,16 +115,25 @@ def save_annotations():
 
 @app.route("/model_status", methods=["GET"])
 def get_model_status():
-    """Get the current status of the YOLO model"""
-    return jsonify(YOLOModel.get_model_status())
+    """Get the current status of the selected model"""
+    model_type = request.args.get('model_type', 'yolo')
+    
+    if model_type == 'few_shot':
+        return jsonify(FewShotModelTrainer.get_model_status())
+    else:
+        return jsonify(YOLOModel.get_model_status())
 
 @app.route("/train_model", methods=["POST"])
 def train_model():
-    """Start training the YOLO model with annotated data"""
+    """Start training the selected model with annotated data"""
     data = request.json
     images = data.get('images', [])
+    model_type = data.get('model_type', 'yolo')
     
-    success = YOLOModel.start_training(images)
+    if model_type == 'few_shot':
+        success = FewShotModelTrainer.start_training(images)
+    else:
+        success = YOLOModel.start_training(images)
     
     if success:
         return jsonify({"message": "Model training started"})
@@ -291,15 +301,20 @@ def get_augmented_images(filename):
 
 @app.route("/predict", methods=["POST"])
 def predict():
-    """Get predictions for an image"""
+    """Get predictions for an image using the selected model"""
     data = request.json
     filename = data.get('filename')
+    model_type = data.get('model_type', 'yolo')
     
     if not filename:
         return jsonify({"error": "Filename is required"}), 400
     
-    predictions = YOLOModel.predict(filename)
-     # Convert NumPy types to native Python types for JSON serialization
+    if model_type == 'few_shot':
+        predictions = FewShotModelTrainer.predict(filename)
+    else:
+        predictions = YOLOModel.predict(filename)
+    
+    # Convert NumPy types to native Python types for JSON serialization
     def convert_numpy_types(obj):
         import numpy as np
         if isinstance(obj, dict):
