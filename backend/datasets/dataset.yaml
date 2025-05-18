@@ -1,5 +1,5 @@
 path: /app/datasets
 train: train/images
 val: val/images
-nc: 5
-names: ['Dog', 'Rabbit', 'Tongue', 'a', 'q']
+nc: 1
+names: ['Dog']

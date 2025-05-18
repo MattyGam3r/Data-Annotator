@@ -39,31 +39,87 @@ Future<List<AnnotatedImage>?> fetchLatestImages() async {
       options: Options(responseType: ResponseType.json),
     );
 
+    print('Debug - Received response from /images: ${response.data}');  // Debug log
+
     List<AnnotatedImage> images = List.empty(growable: true);
 
     if (response == null) return null;
 
     for (var i in response.data) {
+      print('Debug - Processing image: ${i['filename']}');  // Debug log
+      print('Debug - Raw annotations data: ${i['annotations']}');  // Debug log
+      print('Debug - Raw YOLO predictions: ${i['yolo_predictions']}');  // Debug log
+      print('Debug - Raw ONE-SHOT predictions: ${i['one_shot_predictions']}');  // Debug log
+      print('Debug - Is fully annotated: ${i['isFullyAnnotated']}');  // Debug log
+      print('Debug - Uncertainty score: ${i['uncertainty_score']}');  // Debug log
+
       AnnotatedImage image = AnnotatedImage(
         i['filename'],
         isFullyAnnotated: i['isFullyAnnotated'] ?? false,
+        uncertaintyScore: i['uncertainty_score']?.toDouble(),
       );
 
       // Map the database data to our app's format
       if (i.containsKey('upload_time')) {
         var date = DateTime.parse(i['upload_time']);
-        image.uploadedDate = date;
+        image = image.copyWith(uploadedDate: date);
       }
 
       // Load annotations if they exist
       if (i.containsKey('annotations') && i['annotations'] != null) {
         try {
-          List<dynamic> annotations = jsonDecode(i['annotations']);
-          image.boundingBoxes = annotations
-              .map((box) => BoundingBox.fromJson(box))
-              .toList();
+          List<dynamic> annotations = i['annotations'];  // Already a List, no need to parse
+          print('Debug - Processing annotations for ${i['filename']}:');  // Debug log
+          print('Debug - Number of annotations: ${annotations.length}');  // Debug log
+          
+          List<BoundingBox> boxes = annotations.map((box) {
+            print('Debug - Converting box: $box');  // Debug log
+            return BoundingBox.fromJson(box);
+          }).toList();
+          
+          print('Debug - Successfully converted ${boxes.length} boxes');  // Debug log
+          print('Debug - First box details: ${boxes.isNotEmpty ? boxes.first.toJson() : "No boxes"}');  // Debug log
+          
+          image = image.copyWith(boundingBoxes: boxes);
         } catch (e) {
-          print('Error parsing annotations: $e');
+          print('Error processing annotations for ${i['filename']}: $e');
+          print('Error details: ${e.toString()}');
+        }
+      }
+
+      // Load YOLO predictions if they exist
+      if (i.containsKey('yolo_predictions') && i['yolo_predictions'] != null) {
+        try {
+          List<dynamic> predictions = i['yolo_predictions'];
+          print('Debug - Processing YOLO predictions for ${i['filename']}:');
+          print('Debug - Number of YOLO predictions: ${predictions.length}');
+          
+          List<BoundingBox> boxes = predictions.map((box) {
+            print('Debug - Converting YOLO box: $box');
+            return BoundingBox.fromJson(box);
+          }).toList();
+          
+          image = image.copyWith(yoloPredictions: boxes);
+        } catch (e) {
+          print('Error processing YOLO predictions for ${i['filename']}: $e');
+        }
+      }
+
+      // Load ONE-SHOT predictions if they exist
+      if (i.containsKey('one_shot_predictions') && i['one_shot_predictions'] != null) {
+        try {
+          List<dynamic> predictions = i['one_shot_predictions'];
+          print('Debug - Processing ONE-SHOT predictions for ${i['filename']}:');
+          print('Debug - Number of ONE-SHOT predictions: ${predictions.length}');
+          
+          List<BoundingBox> boxes = predictions.map((box) {
+            print('Debug - Converting ONE-SHOT box: $box');
+            return BoundingBox.fromJson(box);
+          }).toList();
+          
+          image = image.copyWith(oneShotPredictions: boxes);
+        } catch (e) {
+          print('Error processing ONE-SHOT predictions for ${i['filename']}: $e');
         }
       }
 
@@ -71,9 +127,10 @@ Future<List<AnnotatedImage>?> fetchLatestImages() async {
       images.add(image);
     }
 
+    print('Debug - Total images processed: ${images.length}');  // Debug log
     return images;
   } on DioException catch (e) {
-    print('Dio Error: ${e.message}');
+    print('Error fetching images: ${e.message}');
     return null;
   }
 }
@@ -81,19 +138,35 @@ Future<List<AnnotatedImage>?> fetchLatestImages() async {
 Future<bool> saveAnnotations(String imageUrl, List<BoundingBox> boxes, {bool isFullyAnnotated = false}) async {
   var dio = Dio();
   
-   try {
+  try {
     final filename = imageUrl.split('/').last;
+    print('Debug - Saving annotations for $filename');  // Debug log
+    print('Debug - Number of boxes: ${boxes.length}');  // Debug log
+    print('Debug - Is fully annotated: $isFullyAnnotated');  // Debug log
+    
+    // Convert boxes to JSON-compatible format
+    final annotations = boxes.map((box) {
+      final json = box.toJson();
+      print('Debug - Box JSON: $json');  // Debug log
+      return json;
+    }).toList();
+    
+    print('Debug - Final annotations: $annotations');  // Debug log
+    
     final response = await dio.post(
       'http://localhost:5001/save_annotations',
       data: {
         'filename': filename,
-        'annotations': json.encode(boxes.map((box) => box.toJson()).toList()),
+        'annotations': annotations,
         'isFullyAnnotated': isFullyAnnotated
       },
     );
+    
+    print('Debug - Save response: ${response.data}');  // Debug log
     return response.statusCode == 200;
   } catch (e) {
     print('Error saving annotations: $e');
+    print('Error details: ${e.toString()}');  // Debug log
     return false;
   }
 }
@@ -113,14 +186,12 @@ Future<Map<String, dynamic>> getModelStatus() async {
   }
 }
 
-Future<bool> startModelTraining(List<AnnotatedImage> images) async {
+Future<bool> startModelTraining() async {
   var dio = Dio();
   try {
     var response = await dio.post(
       'http://localhost:5001/train_model',
-      data: {
-        'images': images.map((img) => img.toJson()).toList(),
-      },
+      data: {},  // No need to send images anymore
     );
     return response.statusCode == 200;
   } on DioException catch (e) {

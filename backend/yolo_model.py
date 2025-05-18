@@ -17,10 +17,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Global variables to track model status
-MODEL_PATH = 'model/best.pt'
+MODEL_PATH = 'model/last.pt'
 TRAINING_IN_PROGRESS = False
 TRAINING_PROGRESS = 0.0
-MODEL_AVAILABLE = os.path.exists(MODEL_PATH)
+MODEL_AVAILABLE = os.path.exists(MODEL_PATH) or os.path.exists('model/training/weights/last.pt')
+MODEL_READY = MODEL_AVAILABLE  # Model is ready if it's available
 LOCK = threading.Lock()
 
 # Create directories for storing data
@@ -30,30 +31,89 @@ os.makedirs('datasets/train/labels', exist_ok=True)
 os.makedirs('datasets/val/images', exist_ok=True)
 os.makedirs('datasets/val/labels', exist_ok=True)
 
+# Initialize the model flags at startup
+if os.path.exists(MODEL_PATH) or os.path.exists('model/training/weights/last.pt'):
+    MODEL_AVAILABLE = True
+    MODEL_READY = True
+    logger.info("YOLO model found at startup, setting as ready for predictions")
+
 class YOLOModel:
     @staticmethod
     def get_model_status():
         """Return the current model status"""
-        global TRAINING_IN_PROGRESS, TRAINING_PROGRESS, MODEL_AVAILABLE
+        global TRAINING_IN_PROGRESS, TRAINING_PROGRESS, MODEL_AVAILABLE, MODEL_READY
         with LOCK:
+            # Check both possible model locations
+            model_available = os.path.exists(MODEL_PATH) or os.path.exists('model/training/weights/last.pt')
             return {
                 'training_in_progress': TRAINING_IN_PROGRESS,
                 'progress': TRAINING_PROGRESS,
-                'model_available': MODEL_AVAILABLE
+                'is_available': model_available,
+                'is_ready': MODEL_READY
             }
     
     @staticmethod
     def prepare_data(images_data):
-        """Prepare dataset for YOLO training with augmented data"""
+        """Prepare dataset for YOLO training"""
         logger.info("Starting data preparation")
+        logger.info(f"Received {len(images_data)} images for preparation")
         
-        # Clear previous dataset
+        # First, ensure class consistency across all components
+        try:
+            logger.info("Ensuring class mapping consistency")
+            import sys
+            import os
+            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+            from ensure_class_consistency import main as ensure_consistency
+            ensure_consistency()
+            logger.info("Class mapping consistency check completed")
+        except Exception as e:
+            logger.error(f"Error ensuring class consistency: {str(e)}")
+            # Continue anyway, as we'll create a new class mapping below
+        
+        # Verify that all images are fully annotated
+        for img in images_data:
+            filename = img.get('filename', 'unknown')
+            fully_annotated = img.get('isFullyAnnotated', False)
+            if not fully_annotated:
+                logger.warning(f"Image {filename} is not marked as fully annotated - skipping")
+                continue
+                
+            # Count verified annotations
+            verified_boxes = [box for box in img.get('annotations', []) if box.get('isVerified', False)]
+            logger.info(f"Image {filename} has {len(verified_boxes)} verified annotations")
+        
+        # Filter out images without any verified annotations
+        valid_images = []
+        for img in images_data:
+            verified_boxes = [box for box in img.get('annotations', []) if box.get('isVerified', False)]
+            if verified_boxes:
+                valid_images.append(img)
+            else:
+                logger.warning(f"Image {img.get('filename', 'unknown')} has no verified annotations - skipping")
+        
+        logger.info(f"After filtering, {len(valid_images)} images have verified annotations")
+        
+        if not valid_images:
+            logger.error("No images with verified annotations found")
+            return False
+        
+        # Clear previous dataset but preserve augmented images
         logger.info("Clearing previous dataset")
-        shutil.rmtree('datasets/train/images', ignore_errors=True)
-        shutil.rmtree('datasets/train/labels', ignore_errors=True)
-        shutil.rmtree('datasets/val/images', ignore_errors=True)
-        shutil.rmtree('datasets/val/labels', ignore_errors=True)
+        for dir_path in ['datasets/train/images', 'datasets/train/labels', 'datasets/val/images', 'datasets/val/labels']:
+            if os.path.exists(dir_path):
+                for filename in os.listdir(dir_path):
+                    # Skip augmented images
+                    if '_aug' in filename:
+                        continue
+                    file_path = os.path.join(dir_path, filename)
+                    try:
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                    except Exception as e:
+                        logger.error(f"Error removing file {file_path}: {str(e)}")
         
+        # Ensure directories exist
         os.makedirs('datasets/train/images', exist_ok=True)
         os.makedirs('datasets/train/labels', exist_ok=True)
         os.makedirs('datasets/val/images', exist_ok=True)
@@ -62,53 +122,93 @@ class YOLOModel:
         # Create class mapping for the labels
         logger.info("Creating class mapping")
         classes = set()
-        for img in images_data:
-            for box in img.get('boundingBoxes', []):
+        for img in valid_images:
+            logger.info(f"Processing image {img.get('filename')} for class mapping")
+            for box in img.get('annotations', []):
                 if box.get('isVerified', False):
-                    classes.add(box.get('label'))
+                    label = box.get('label', '')
+                    logger.info(f"Found verified label: {label}")
+                    classes.add(label)
         
         class_names = sorted(list(classes))
         class_map = {name: idx for idx, name in enumerate(class_names)}
         logger.info(f"Found {len(class_map)} classes: {class_names}")
+        logger.info(f"Class mapping: {class_map}")
+        
+        if not class_map:
+            logger.error("No classes found in verified annotations")
+            return False
         
         # Save class mapping
         with open('model/classes.json', 'w') as f:
             json.dump(class_map, f)
+        logger.info("Saved class mapping to model/classes.json")
         
         # Split data: 80% training, 20% validation
         logger.info("Splitting data into training and validation sets")
         np.random.seed(42)
         train_indices = np.random.choice(
-            len(images_data), 
-            int(0.8 * len(images_data)), 
+            len(valid_images), 
+            int(0.8 * len(valid_images)), 
             replace=False
         )
         train_set = set(train_indices)
-        logger.info(f"Split: {len(train_set)} training images, {len(images_data) - len(train_set)} validation images")
+        logger.info(f"Split: {len(train_set)} training images, {len(valid_images) - len(train_set)} validation images")
         
         successful_train_images = 0
         successful_val_images = 0
         
         # Process in batches to be more memory efficient
         logger.info("Processing images in batches")
-        batch_size = 5  # Process 5 images at a time
+        batch_size = 5
         
-        for batch_start in range(0, len(images_data), batch_size):
-            batch_end = min(batch_start + batch_size, len(images_data))
+        def validate_and_convert_box(box, img_width, img_height):
+            """Validate and convert box coordinates to YOLO format"""
+            try:
+                x = float(box.get('x', 0.0))
+                y = float(box.get('y', 0.0))
+                w = float(box.get('width', 0.0))
+                h = float(box.get('height', 0.0))
+                
+                # Ensure coordinates are within [0, 1]
+                x = max(0.0, min(1.0, x))
+                y = max(0.0, min(1.0, y))
+                w = max(0.0, min(1.0, w))
+                h = max(0.0, min(1.0, h))
+                
+                # Convert to center coordinates
+                center_x = x + w/2
+                center_y = y + h/2
+                
+                # Ensure center coordinates are within [0, 1]
+                center_x = max(0.0, min(1.0, center_x))
+                center_y = max(0.0, min(1.0, center_y))
+                
+                # Ensure width and height don't exceed image bounds
+                w = min(w, 1.0 - x)
+                h = min(h, 1.0 - y)
+                
+                return center_x, center_y, w, h
+            except Exception as e:
+                logger.error(f"Error validating box coordinates: {str(e)}")
+                return None
+        
+        for batch_start in range(0, len(valid_images), batch_size):
+            batch_end = min(batch_start + batch_size, len(valid_images))
             logger.info(f"Processing batch {batch_start // batch_size + 1}, images {batch_start}-{batch_end-1}")
             
             for i in range(batch_start, batch_end):
-                img_data = images_data[i]
+                img_data = valid_images[i]
                 
                 # Only process images with verified boxes
-                verified_boxes = [box for box in img_data.get('boundingBoxes', []) 
+                verified_boxes = [box for box in img_data.get('annotations', []) 
                                 if box.get('isVerified', False)]
                 
                 if not verified_boxes:
                     logger.warning(f"No verified boxes in image {i}, skipping")
                     continue
                     
-                filename = img_data.get('filepath')
+                filename = img_data.get('filename')
                 if not filename:
                     logger.warning(f"No filename for image {i}, skipping")
                     continue
@@ -119,6 +219,14 @@ class YOLOModel:
                 if not os.path.exists(src_path):
                     logger.warning(f"Source image not found: {src_path}, skipping")
                     continue
+                
+                # Get image dimensions
+                try:
+                    with Image.open(src_path) as img:
+                        img_width, img_height = img.size
+                except Exception as e:
+                    logger.error(f"Error getting image dimensions for {filename}: {str(e)}")
+                    continue
                     
                 # Determine if this is for train or validation
                 if i in train_set:
@@ -126,39 +234,33 @@ class YOLOModel:
                     img_dest = os.path.join('datasets/train/images', filename)
                     label_dest = os.path.join('datasets/train/labels', os.path.splitext(filename)[0] + '.txt')
                     
-                    # Prepare bboxes and class labels for augmentation
-                    bboxes = []
-                    class_labels = []
-                    for box in verified_boxes:
-                        class_id = class_map.get(box.get('label', ''), 0)
-                        x = box.get('x', 0.0)
-                        y = box.get('y', 0.0)
-                        w = box.get('width', 0.0)
-                        h = box.get('height', 0.0)
+                    try:
+                        shutil.copy2(src_path, img_dest)
                         
-                        # Convert to center coordinates
-                        center_x = x + w/2
-                        center_y = y + h/2
+                        with open(label_dest, 'w') as f:
+                            for box in verified_boxes:
+                                # Get numeric class ID from the mapping
+                                class_id = class_map.get(box.get('label', ''))
+                                if class_id is None:
+                                    logger.warning(f"Unknown class label: {box.get('label')}, skipping")
+                                    continue
+                                
+                                # Validate and convert box coordinates
+                                coords = validate_and_convert_box(box, img_width, img_height)
+                                if coords is None:
+                                    continue
+                                
+                                center_x, center_y, w, h = coords
+                                
+                                # Write YOLO format: class_id center_x center_y width height
+                                f.write(f"{class_id} {center_x} {center_y} {w} {h}\n")
                         
-                        bboxes.append([center_x, center_y, w, h])
-                        class_labels.append(class_id)
-                    
-                    # Use ImageAugmenter to create augmented dataset (using only 1 augmentation to save memory)
-                    if ImageAugmenter.create_augmented_dataset(
-                        src_path,
-                        bboxes,
-                        class_labels,
-                        img_dest,
-                        label_dest,
-                        num_augmentations=1  # Reduced from 3 to save memory
-                    ):
                         successful_train_images += 1
                         logger.info(f"Successfully processed training image: {filename}")
-                    else:
-                        logger.error(f"Failed to process training image: {filename}")
+                    except Exception as e:
+                        logger.error(f"Error processing training image {filename}: {str(e)}", exc_info=True)
                 else:
                     logger.info(f"Processing validation image: {filename}")
-                    # For validation, just copy the original image and annotations
                     img_dest = os.path.join('datasets/val/images', filename)
                     label_dest = os.path.join('datasets/val/labels', os.path.splitext(filename)[0] + '.txt')
                     
@@ -167,15 +269,20 @@ class YOLOModel:
                         
                         with open(label_dest, 'w') as f:
                             for box in verified_boxes:
-                                class_id = class_map.get(box.get('label', ''), 0)
-                                x = box.get('x', 0.0)
-                                y = box.get('y', 0.0)
-                                w = box.get('width', 0.0)
-                                h = box.get('height', 0.0)
+                                # Get numeric class ID from the mapping
+                                class_id = class_map.get(box.get('label', ''))
+                                if class_id is None:
+                                    logger.warning(f"Unknown class label: {box.get('label')}, skipping")
+                                    continue
                                 
-                                center_x = x + w/2
-                                center_y = y + h/2
+                                # Validate and convert box coordinates
+                                coords = validate_and_convert_box(box, img_width, img_height)
+                                if coords is None:
+                                    continue
                                 
+                                center_x, center_y, w, h = coords
+                                
+                                # Write YOLO format: class_id center_x center_y width height
                                 f.write(f"{class_id} {center_x} {center_y} {w} {h}\n")
                         
                         successful_val_images += 1
@@ -210,13 +317,14 @@ class YOLOModel:
     @staticmethod
     def train_model_thread(images_data):
         """Train YOLO model in a separate thread"""
-        global TRAINING_IN_PROGRESS, TRAINING_PROGRESS, MODEL_AVAILABLE
+        global TRAINING_IN_PROGRESS, TRAINING_PROGRESS, MODEL_AVAILABLE, MODEL_READY
         
         try:
             logger.info("Starting model training thread")
             with LOCK:
                 TRAINING_IN_PROGRESS = True
                 TRAINING_PROGRESS = 0.0
+                MODEL_READY = False
             
             # Prepare the data
             logger.info("Preparing training data")
@@ -275,8 +383,13 @@ class YOLOModel:
             
             with LOCK:
                 TRAINING_IN_PROGRESS = False
-                MODEL_AVAILABLE = os.path.exists(MODEL_PATH)
+                MODEL_AVAILABLE = os.path.exists(MODEL_PATH) or os.path.exists(best_model)
                 TRAINING_PROGRESS = 1.0
+            
+            # Set model as ready for predictions
+            with LOCK:
+                MODEL_READY = True
+                logger.info("Model is now ready for predictions")
                 
         except Exception as e:
             logger.error(f"Error training model: {str(e)}", exc_info=True)
@@ -286,11 +399,15 @@ class YOLOModel:
     @staticmethod
     def start_training(images_data):
         """Start model training in a separate thread"""
-        global TRAINING_IN_PROGRESS
+        global TRAINING_IN_PROGRESS, MODEL_READY
         
         with LOCK:
             if TRAINING_IN_PROGRESS:
                 return False
+            
+            # Explicitly set model as NOT ready at the beginning of training
+            MODEL_READY = False
+            TRAINING_IN_PROGRESS = True
         
         # Start training in a separate thread
         threading.Thread(
@@ -302,63 +419,161 @@ class YOLOModel:
         return True
     
     @staticmethod
-    def predict(filename):
-        """Make predictions for an image"""
-        global MODEL_AVAILABLE
-        
-        if not MODEL_AVAILABLE:
-            return []
-            
-        # Load class mapping
+    def predict(filename, use_latest=True):
+        """Get predictions for an image"""
         try:
-            with open('model/classes.json', 'r') as f:
-                class_map = json.load(f)
-        except:
-            return []
+            # First check if training is in progress or model is not ready 
+            # BEFORE attempting to load model files
+            global TRAINING_IN_PROGRESS, MODEL_READY
             
-        # Reverse the class map
-        class_names = {idx: name for name, idx in class_map.items()}
-        
-        # Load the model
-        model = YOLO(MODEL_PATH)
-        
-        # Run inference
-        img_path = os.path.join('uploads', filename)
-        if not os.path.exists(img_path):
-            return []
+            with LOCK:
+                # Skip prediction if model is not ready
+                if TRAINING_IN_PROGRESS:
+                    logger.info("Training in progress, deferring predictions")
+                    return []
+                    
+                if not MODEL_READY:
+                    logger.info("Model not ready, deferring predictions")
+                    return []
             
-        results = model(img_path)
-        
-        # Process the results
-        predictions = []
-        for result in results:
-            boxes = result.boxes
-            for i, box in enumerate(boxes):
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            logger.info(f"Making predictions for {filename} - model is ready")
+            
+            # Only proceed if model is ready
+            # Create a list of potential model paths to try
+            model_paths = []
+            
+            if use_latest:
+                # Try models in order of preference
+                model_paths.extend([
+                    'model/training/weights/best.pt',
+                    'model/best.pt',
+                    'model/training/weights/last.pt',
+                    'model/last.pt',
+                    'yolov8n.pt'  # Fallback to pretrained model if all else fails
+                ])
+            else:
+                model_paths.extend([
+                    'model/best.pt',
+                    'model/last.pt',
+                    'model/training/weights/best.pt',
+                    'model/training/weights/last.pt',
+                    'yolov8n.pt'  # Fallback to pretrained model
+                ])
+            
+            # Try each model path until we find a working one
+            model = None
+            weights_path = None
+            
+            for path in model_paths:
+                if os.path.exists(path):
+                    try:
+                        logger.info(f"Attempting to load model from {path}")
+                        # Check if file size is reasonable (at least 10KB)
+                        file_size = os.path.getsize(path)
+                        if file_size < 10000:  # 10KB
+                            logger.warning(f"Model file too small ({file_size} bytes), likely corrupted: {path}")
+                            continue
+                            
+                        model = YOLO(path)
+                        logger.info(f"Successfully loaded model from {path}")
+                        weights_path = path
+                        break
+                    except Exception as e:
+                        logger.error(f"Failed to load model from {path}: {str(e)}")
+                        # If the file is corrupted, try to rename it
+                        try:
+                            corrupted_path = f"{path}.corrupted"
+                            logger.info(f"Renaming corrupted model file {path} to {corrupted_path}")
+                            os.rename(path, corrupted_path)
+                        except Exception as rename_error:
+                            logger.error(f"Failed to rename corrupted model file: {str(rename_error)}")
+                        continue
+            
+            # Check if we found a working model
+            if model is None:
+                logger.error("Failed to load any model weights, cannot make predictions")
+                return []
                 
-                # Get image dimensions
-                img = Image.open(img_path)
-                img_width, img_height = img.size
+            logger.info(f"Using weights from {weights_path}")
+
+            # Load class mapping
+            try:
+                with open('model/classes.json', 'r') as f:
+                    class_map = json.load(f)
+                # Reverse the mapping to get class names from IDs
+                class_names = {idx: name for name, idx in class_map.items()}
+                logger.info(f"Loaded class mapping with {len(class_names)} classes")
+            except Exception as e:
+                logger.error(f"Error loading class mapping: {str(e)}")
+                return []
+
+            # Get image path
+            img_path = f'uploads/{filename}'
+            if not os.path.exists(img_path):
+                logger.error(f"Image file not found: {img_path}")
+                return []
                 
-                # Convert to normalized coordinates
-                x = x1 / img_width
-                y = y1 / img_height
-                width = (x2 - x1) / img_width
-                height = (y2 - y1) / img_height
-                
-                # Get class and confidence
-                cls = int(box.cls.item())
-                conf = float(box.conf.item())
-                
-                label = class_names.get(cls, f"unknown_{cls}")
-                
-                predictions.append({
-                    'x': x,
-                    'y': y,
-                    'width': width,
-                    'height': height,
-                    'label': label,
-                    'confidence': conf
-                })
-        
-        return predictions
+            # Get predictions
+            logger.info(f"Running inference on {img_path}")
+            results = model(img_path)
+            predictions = []
+            
+            for r in results:
+                boxes = r.boxes
+                for box in boxes:
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    conf = float(box.conf[0])
+                    cls = int(box.cls[0])
+                    
+                    # Get class name from mapping
+                    label = class_names.get(cls, f"unknown_{cls}")
+                    logger.info(f"Prediction: class={label}, conf={conf:.2f}, coords=({x1},{y1},{x2},{y2})")
+                    
+                    # Load image for dimensions
+                    img = Image.open(img_path)
+                    width, height = img.size
+                    
+                    # Convert from YOLO's (x1,y1,x2,y2) format to our (x,y,width,height) format
+                    # Ensure we accurately capture the object
+                    x = x1 / width  # Left coordinate normalized
+                    y = y1 / height  # Top coordinate normalized
+                    w = (x2 - x1) / width  # Width normalized
+                    h = (y2 - y1) / height  # Height normalized
+                    
+                    # Debug info to check conversion
+                    logger.info(f"Image dimensions: {width}x{height}")
+                    logger.info(f"Original box: ({x1},{y1},{x2},{y2})")
+                    logger.info(f"Normalized box: x={x:.4f}, y={y:.4f}, w={w:.4f}, h={h:.4f}")
+                    
+                    # Ensure coordinates are within [0,1] range
+                    x = max(0.0, min(0.999, x))
+                    y = max(0.0, min(0.999, y))
+                    w = max(0.001, min(1.0 - x, w))
+                    h = max(0.001, min(1.0 - y, h))
+                    
+                    predictions.append({
+                        'x': x,
+                        'y': y,
+                        'width': w,
+                        'height': h,
+                        'label': label,
+                        'confidence': conf,
+                        'source': 'ai',
+                        'isVerified': False
+                    })
+            
+            logger.info(f"Returning {len(predictions)} predictions")
+            return predictions
+        except Exception as e:
+            logger.error(f"Error getting predictions: {str(e)}", exc_info=True)
+            return []
+
+    @staticmethod
+    def reset():
+        global MODEL_AVAILABLE, MODEL_READY
+        with LOCK:
+            MODEL_AVAILABLE = False
+            MODEL_READY = False
+        # If you cache the model object in memory, set it to None here
+        # Example: YOLOModel._model = None
+        # (Add any additional in-memory cleanup if needed)

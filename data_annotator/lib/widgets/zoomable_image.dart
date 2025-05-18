@@ -120,12 +120,13 @@ class _ZoomableImageState extends State<ZoomableImage> with SingleTickerProvider
     final horizontalOffset = (containerSize.width - displayWidth) / 2;
     final verticalOffset = (containerSize.height - displayHeight) / 2;
     
-    // Calculate base rectangle
+    // FIXED: Changed calculation to treat (x,y) as top-left corner instead of center
+    // This aligns with how YOLO returns coordinates in the backend
     final baseRect = Rect.fromLTWH(
       horizontalOffset + box.x * displayWidth,
       verticalOffset + box.y * displayHeight,
       box.width * displayWidth,
-      box.height * displayHeight,
+      box.height * displayHeight
     );
     
     // Apply transformation
@@ -210,22 +211,22 @@ class _ZoomableImageState extends State<ZoomableImage> with SingleTickerProvider
     final horizontalOffset = (containerSize.width - displayWidth) / 2;
     final verticalOffset = (containerSize.height - displayHeight) / 2;
     
-    // Calculate normalized coordinates
-    double x = (untransformedTopLeft.dx - horizontalOffset) / displayWidth;
-    double y = (untransformedTopLeft.dy - verticalOffset) / displayHeight;
+    // Calculate top-left coordinates in display space
+    double left = (untransformedTopLeft.dx - horizontalOffset) / displayWidth;
+    double top = (untransformedTopLeft.dy - verticalOffset) / displayHeight;
     double width = (untransformedBottomRight.dx - untransformedTopLeft.dx) / displayWidth;
     double height = (untransformedBottomRight.dy - untransformedTopLeft.dy) / displayHeight;
     
     // Clamp values to 0-1 range
-    x = x.clamp(0.0, 1.0);
-    y = y.clamp(0.0, 1.0);
-    width = width.clamp(0.0, 1.0 - x);
-    height = height.clamp(0.0, 1.0 - y);
+    left = left.clamp(0.0, 1.0);
+    top = top.clamp(0.0, 1.0);
+    width = width.clamp(0.0, 1.0 - left);
+    height = height.clamp(0.0, 1.0 - top);
     
-    // Create a temporary box with empty label
+    // Create a temporary box with empty label and using top-left coordinates
     final tempBox = BoundingBox(
-      x: x,
-      y: y,
+      x: left,
+      y: top,
       width: width,
       height: height,
       label: "", // Empty label by default

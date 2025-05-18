@@ -8,6 +8,13 @@ services:
     volumes:
       - ./backend:/app
     restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
 
   frontend:
     build: ./data_annotator

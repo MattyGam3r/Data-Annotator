@@ -8,4 +8,5 @@ flask_wtf
 numpy
 ultralytics
 torch
+torchvision
 albumentations

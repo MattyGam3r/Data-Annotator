@@ -1,6 +1,12 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'structs.dart';
+import 'http-requests.dart';
+
+enum ModelType {
+  yolo,
+  fewShot,
+}
 
 class YoloService {
   final Dio _dio = Dio();
@@ -8,11 +14,22 @@ class YoloService {
   static bool _isModelTraining = false;
   static bool _isModelAvailable = false;
   static double _trainingProgress = 0.0;
+  static ModelType _currentModelType = ModelType.yolo;
+
+  ModelType get currentModelType => _currentModelType;
+  set currentModelType(ModelType type) {
+    _currentModelType = type;
+  }
 
   Future<bool> isModelAvailable() async {
     try {
-      final response = await _dio.get('$baseUrl/model_status');
-      _isModelAvailable = response.data['model_available'] ?? false;
+      final response = await _dio.get(
+        '$baseUrl/model_status',
+        queryParameters: {'model_type': _currentModelType == ModelType.yolo ? 'yolo' : 'few_shot'},
+      );
+      _isModelAvailable = _currentModelType == ModelType.yolo 
+          ? response.data['yolo']['is_available'] ?? false
+          : response.data['few_shot']['is_available'] ?? false;
       return _isModelAvailable;
     } on DioException catch (e) {
       print('Error checking model status: ${e.message}');
@@ -22,7 +39,10 @@ class YoloService {
 
   Future<bool> isModelTraining() async {
     try {
-      final response = await _dio.get('$baseUrl/model_status');
+      final response = await _dio.get(
+        '$baseUrl/model_status',
+        queryParameters: {'model_type': _currentModelType == ModelType.yolo ? 'yolo' : 'few_shot'},
+      );
       _isModelTraining = response.data['training_in_progress'] ?? false;
       _trainingProgress = (response.data['progress'] ?? 0.0).toDouble();
       return _isModelTraining;
@@ -32,41 +52,32 @@ class YoloService {
     }
   }
 
-  // Train YOLO model with verified annotations
-  Future<bool> trainModel(List<AnnotatedImage> annotatedImages) async {
-    // Filter only images with verified annotations
-    final trainingImages = annotatedImages.where((image) {
-      // Only use images that have at least one verified annotation
-      return image.boundingBoxes.any((box) => box.isVerified);
-    }).toList();
-
-    if (trainingImages.isEmpty) {
-      print('No verified annotations available for training');
-      return false;
-    }
-
+  // Train model with verified annotations
+  Future<bool> trainModel() async {
     try {
-      // Start the training process
-      final response = await _dio.post(
-        '$baseUrl/train_model',
-        data: {
-          'images': trainingImages.map((img) => img.toJson()).toList(),
-        },
-      );
-      
-      _isModelTraining = true;
-      _trainingProgress = 0.0;
-      return response.statusCode == 200;
-    } on DioException catch (e) {
-      print('Error training model: ${e.message}');
+      print('Debug - Starting model training');
+      final success = await startModelTraining();
+      print('Debug - Training request result: $success');
+      return success;
+    } catch (e) {
+      print('Error in trainModel: $e');
       return false;
     }
   }
 
   // Get predictions for an image
   Future<List<BoundingBox>?> predictAnnotations(String imageFilename) async {
-    if (!await isModelAvailable()) {
-      print('No trained model available for prediction');
+    // First check if model is available and not training
+    final status = await getTrainingStatus();
+    final modelData = _currentModelType == ModelType.yolo ? status['yolo'] : status['few_shot'];
+    
+    if (modelData['training_in_progress']) {
+      print('Model is currently training. Cannot predict until training is complete.');
+      return null;
+    }
+    
+    if (!modelData['is_available']) {
+      print('Model not available. Train a model first.');
       return null;
     }
 
@@ -74,13 +85,19 @@ class YoloService {
       // Extract just the filename from the URL
       String extractedFilename = imageFilename.split('/').last;
       
+      print('Getting predictions for $extractedFilename using ${_currentModelType == ModelType.yolo ? "YOLO" : "Few-Shot"} model');
+      
       final response = await _dio.post(
         '$baseUrl/predict',
-        data: {'filename': extractedFilename},
+        data: {
+          'filename': extractedFilename,
+          'model_type': _currentModelType == ModelType.yolo ? 'yolo' : 'few_shot',
+        },
       );
       
       if (response.statusCode == 200 && response.data['predictions'] != null) {
         List<dynamic> predictions = response.data['predictions'];
+        print('Received ${predictions.length} predictions');
         return predictions.map((pred) {
           return BoundingBox(
             x: pred['x'].toDouble(),
@@ -93,10 +110,24 @@ class YoloService {
             isVerified: false, // AI predictions are not verified by default
           );
         }).toList();
+      } else if (response.statusCode == 400) {
+        // Handle specific error messages
+        final errorMessage = response.data['error'] as String?;
+        if (errorMessage?.contains('still training') == true) {
+          print('Model is still training: $errorMessage');
+        } else if (errorMessage?.contains('not available') == true) {
+          print('Model not available: $errorMessage');
+        } else {
+          print('Prediction error: ${response.data}');
+        }
       }
       return null;
     } on DioException catch (e) {
       print('Error getting predictions: ${e.message}');
+      if (e.response != null) {
+        print('Response data: ${e.response?.data}');
+        print('Response status: ${e.response?.statusCode}');
+      }
       return null;
     }
   }
@@ -104,12 +135,16 @@ class YoloService {
   // Check training status
   Future<Map<String, dynamic>> getTrainingStatus() async {
     try {
-      final response = await _dio.get('$baseUrl/model_status');
+      final response = await _dio.get(
+        '$baseUrl/model_status',
+        queryParameters: {'model_type': _currentModelType == ModelType.yolo ? 'yolo' : 'few_shot'},
+      );
       
       // Update our cached values
-      _isModelTraining = response.data['training_in_progress'] ?? false;
-      _trainingProgress = (response.data['progress'] ?? 0.0).toDouble();
-      _isModelAvailable = response.data['model_available'] ?? false;
+      final modelData = _currentModelType == ModelType.yolo ? response.data['yolo'] : response.data['few_shot'];
+      _isModelTraining = modelData['training_in_progress'] ?? false;
+      _trainingProgress = (modelData['progress'] ?? 0.0).toDouble();
+      _isModelAvailable = modelData['is_available'] ?? false;
       
       return response.data;
     } on DioException catch (e) {
@@ -119,6 +154,145 @@ class YoloService {
         'progress': _trainingProgress,
         'model_available': _isModelAvailable
       };
+    }
+  }
+
+  // Get augmented versions of an image
+  Future<List<Map<String, dynamic>>?> getAugmentedImages(String imageFilename) async {
+    try {
+      // Extract just the filename from the URL
+      String extractedFilename = imageFilename.split('/').last;
+      
+      final response = await _dio.get(
+        '$baseUrl/get_augmented_images/$extractedFilename',
+      );
+      
+      if (response.statusCode == 200 && response.data['images'] != null) {
+        List<dynamic> images = response.data['images'];
+        return images.map((img) => {
+          'url': img['url'],
+          'is_original': img['is_original'],
+          'annotations': img['annotations']  // Include annotations in the response
+        }).toList();
+      }
+      return null;
+    } on DioException catch (e) {
+      print('Error getting augmented images: ${e.message}');
+      return null;
+    }
+  }
+
+  // Augment all images
+  Future<Map<String, dynamic>?> augmentImages(int numAugmentations) async {
+    try {
+      print('Sending augmentation request to ${baseUrl}/augment_images');
+      print('Number of augmentations: $numAugmentations');
+      
+      final response = await _dio.post(
+        '$baseUrl/augment_images',
+        data: {
+          'num_augmentations': numAugmentations,
+        },
+        options: Options(
+          headers: {'Content-Type': 'application/json'},
+          validateStatus: (status) => status! < 500,
+          followRedirects: true,
+          maxRedirects: 5,
+        ),
+      );
+      
+      print('Response status code: ${response.statusCode}');
+      print('Response data: ${response.data}');
+      
+      if (response.statusCode == 200) {
+        return response.data;
+      } else {
+        print('Error augmenting images: ${response.statusCode} - ${response.data}');
+        return null;
+      }
+    } on DioException catch (e) {
+      print('Error augmenting images: ${e.message}');
+      if (e.response != null) {
+        print('Response data: ${e.response?.data}');
+        print('Response status: ${e.response?.statusCode}');
+        print('Response headers: ${e.response?.headers}');
+      }
+      if (e.type == DioExceptionType.connectionTimeout) {
+        print('Connection timeout');
+      } else if (e.type == DioExceptionType.receiveTimeout) {
+        print('Receive timeout');
+      } else if (e.type == DioExceptionType.sendTimeout) {
+        print('Send timeout');
+      }
+      return null;
+    }
+  }
+
+  // Get predictions from both models with uncertainty score
+  Future<Map<String, dynamic>?> getPredictionsWithUncertainty(String imageFilename) async {
+    try {
+      // Extract just the filename from the URL
+      String extractedFilename = imageFilename.split('/').last;
+      
+      final response = await _dio.post(
+        '$baseUrl/get_predictions_with_uncertainty',
+        data: {
+          'filename': extractedFilename,
+        },
+      );
+      
+      if (response.statusCode == 200) {
+        return response.data;
+      }
+      return null;
+    } on DioException catch (e) {
+      print('Error getting predictions with uncertainty: ${e.message}');
+      return null;
+    }
+  }
+
+  // Reset the annotator (delete all images, annotations, and models)
+  Future<bool> resetAnnotator() async {
+    try {
+      final response = await _dio.post(
+        '$baseUrl/reset_annotator',
+        options: Options(
+          headers: {'Content-Type': 'application/json'},
+        ),
+      );
+      if (response.statusCode == 200 && response.data['success'] == true) {
+        print('Annotator reset successfully');
+        return true;
+      } else {
+        print('Failed to reset annotator: \\${response.data}');
+        return false;
+      }
+    } on DioException catch (e) {
+      print('Error resetting annotator: \\${e.message}');
+      return false;
+    }
+  }
+
+  // Update uncertainty scores for all images
+  Future<bool> updateAllUncertaintyScores() async {
+    try {
+      final response = await _dio.post(
+        '$baseUrl/update_all_uncertainty_scores',
+        options: Options(
+          headers: {'Content-Type': 'application/json'},
+        ),
+      );
+      
+      if (response.statusCode == 200) {
+        print('Updated uncertainty scores: ${response.data}');
+        return true;
+      } else {
+        print('Failed to update uncertainty scores: ${response.data}');
+        return false;
+      }
+    } on DioException catch (e) {
+      print('Error updating uncertainty scores: ${e.message}');
+      return false;
     }
   }
 }

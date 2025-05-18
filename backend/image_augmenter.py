@@ -5,6 +5,7 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import logging
 import gc
+import json
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -83,6 +84,7 @@ class ImageAugmenter:
                     y = max(0.0, min(1.0, y))
                     w = max(0.0, min(1.0, w))
                     h = max(0.0, min(1.0, h))
+                    # Use the class ID (numeric) directly
                     f.write(f"{class_label} {x} {y} {w} {h}\n")
             
             # Explicitly clean up to free memory
@@ -112,22 +114,45 @@ class ImageAugmenter:
             os.makedirs(os.path.dirname(base_output_path), exist_ok=True)
             os.makedirs(os.path.dirname(base_label_path), exist_ok=True)
             
+            # Load the same class mapping that YOLO uses
+            try:
+                with open('model/classes.json', 'r') as f:
+                    class_map = json.load(f)
+                logger.info(f"Loaded class mapping from model/classes.json: {class_map}")
+            except Exception as e:
+                logger.error(f"Failed to load class mapping, creating a new one: {str(e)}")
+                # Create a temporary class mapping
+                unique_labels = list(set(class_labels))
+                class_map = {label: idx for idx, label in enumerate(sorted(unique_labels))}
+                logger.info(f"Created temporary class mapping: {class_map}")
+            
+            # Convert string class labels to numeric class IDs for YOLO
+            numeric_class_labels = []
+            for label in class_labels:
+                class_id = class_map.get(label)
+                if class_id is None:
+                    logger.warning(f"Unknown class label: {label}, defaulting to class 0")
+                    class_id = 0
+                numeric_class_labels.append(class_id)
+            
+            logger.info(f"Converted string labels to numeric IDs: {list(zip(class_labels, numeric_class_labels))}")
+            
             # Save original image efficiently
             logger.info("Saving original image")
             with Image.open(image_path) as img:
                 img.save(base_output_path)
             
             # Save original annotations
-            logger.info("Saving original annotations")
+            logger.info("Saving original annotations with numeric class IDs")
             with open(base_label_path, 'w') as f:
-                for box, class_label in zip(bboxes, class_labels):
+                for box, class_id in zip(bboxes, numeric_class_labels):
                     x, y, w, h = box
                     # Ensure coordinates are within valid range [0, 1]
                     x = max(0.0, min(1.0, x))
                     y = max(0.0, min(1.0, y))
                     w = max(0.0, min(1.0, w))
                     h = max(0.0, min(1.0, h))
-                    f.write(f"{class_label} {x} {y} {w} {h}\n")
+                    f.write(f"{class_id} {x} {y} {w} {h}\n")
             
             # Create augmented versions (reduced from 3 to 1 by default to save memory)
             logger.info("Creating augmented versions")
@@ -142,7 +167,7 @@ class ImageAugmenter:
                 if ImageAugmenter.augment_image(
                     image_path,
                     bboxes,
-                    class_labels,
+                    numeric_class_labels,  # Use numeric class IDs instead of string labels
                     aug_filename,
                     aug_label_path,
                     augmentation_pipeline
