@@ -15,10 +15,46 @@ class YoloService {
   static bool _isModelAvailable = false;
   static double _trainingProgress = 0.0;
   static ModelType _currentModelType = ModelType.yolo;
+  static int _autoTrainingThreshold = 0; // Default to disabled (0)
 
   ModelType get currentModelType => _currentModelType;
   set currentModelType(ModelType type) {
     _currentModelType = type;
+  }
+
+  int get autoTrainingThreshold => _autoTrainingThreshold;
+  set autoTrainingThreshold(int value) {
+    _autoTrainingThreshold = value;
+    // Save the threshold to backend
+    saveAutoTrainingThreshold(value);
+  }
+
+  // Initialize service by fetching the current threshold setting
+  Future<void> initialize() async {
+    try {
+      final response = await _dio.get('$baseUrl/auto_training_settings');
+      if (response.statusCode == 200) {
+        _autoTrainingThreshold = response.data['threshold'] ?? 0;
+      }
+    } catch (e) {
+      print('Error initializing YoloService: $e');
+    }
+  }
+
+  // Save the auto-training threshold to the backend
+  Future<bool> saveAutoTrainingThreshold(int threshold) async {
+    try {
+      final response = await _dio.post(
+        '$baseUrl/auto_training_settings',
+        data: {
+          'threshold': threshold,
+        },
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      print('Error saving auto-training threshold: $e');
+      return false;
+    }
   }
 
   Future<bool> isModelAvailable() async {
@@ -98,17 +134,37 @@ class YoloService {
       if (response.statusCode == 200 && response.data['predictions'] != null) {
         List<dynamic> predictions = response.data['predictions'];
         print('Received ${predictions.length} predictions');
+        
         return predictions.map((pred) {
-          return BoundingBox(
-            x: pred['x'].toDouble(),
-            y: pred['y'].toDouble(),
-            width: pred['width'].toDouble(),
-            height: pred['height'].toDouble(),
-            label: pred['label'],
-            source: AnnotationSource.ai,
-            confidence: pred['confidence'].toDouble(),
-            isVerified: false, // AI predictions are not verified by default
-          );
+          // Check if this is a few-shot prediction (label-only format without bounding box coordinates)
+          if (_currentModelType == ModelType.fewShot && 
+              !pred.containsKey('x') && 
+              !pred.containsKey('width')) {
+            // Create a dummy bounding box for display, centered in the image
+            // with a tag indicating it's a label-only prediction
+            return BoundingBox(
+              x: 0.1, // Small box in the top-left
+              y: 0.1,
+              width: 0.2,
+              height: 0.1,
+              label: "Few-Shot Label: ${pred['label']}",
+              source: AnnotationSource.ai,
+              confidence: pred['confidence'].toDouble(),
+              isVerified: false,
+            );
+          } else {
+            // Normal YOLO-style prediction with coordinates
+            return BoundingBox(
+              x: pred['x'].toDouble(),
+              y: pred['y'].toDouble(),
+              width: pred['width'].toDouble(),
+              height: pred['height'].toDouble(),
+              label: pred['label'],
+              source: AnnotationSource.ai,
+              confidence: pred['confidence'].toDouble(),
+              isVerified: false, // AI predictions are not verified by default
+            );
+          }
         }).toList();
       } else if (response.statusCode == 400) {
         // Handle specific error messages
@@ -242,6 +298,29 @@ class YoloService {
       );
       
       if (response.statusCode == 200) {
+        // Process few-shot predictions to handle label-only format
+        if (response.data.containsKey('few_shot_predictions')) {
+          List<dynamic> fewShotPreds = response.data['few_shot_predictions'];
+          if (fewShotPreds.isNotEmpty && fewShotPreds[0] is Map) {
+            // Check if these are label-only predictions
+            if (!fewShotPreds[0].containsKey('x') && !fewShotPreds[0].containsKey('width')) {
+              // Convert to display format with dummy bounding boxes
+              List<Map<String, dynamic>> displayPreds = fewShotPreds.map((pred) => {
+                'x': 0.1,
+                'y': 0.1,
+                'width': 0.2,
+                'height': 0.1,
+                'label': "Few-Shot Label: ${pred['label']}",
+                'confidence': pred['confidence'],
+                'source': 'ai',
+                'isVerified': false
+              }).toList();
+              
+              // Replace the original with the display version
+              response.data['few_shot_predictions'] = displayPreds;
+            }
+          }
+        }
         return response.data;
       }
       return null;

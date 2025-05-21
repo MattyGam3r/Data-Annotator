@@ -94,15 +94,43 @@ Future<List<AnnotatedImage>?> fetchLatestImages() async {
           print('Debug - Processing YOLO predictions for ${i['filename']}:');
           print('Debug - Number of YOLO predictions: ${predictions.length}');
           
+          // Add more detailed debugging
+          if (predictions.isNotEmpty) {
+            print('Debug - YOLO prediction example: ${predictions.first}');
+          }
+          
           List<BoundingBox> boxes = predictions.map((box) {
-            print('Debug - Converting YOLO box: $box');
-            return BoundingBox.fromJson(box);
+            try {
+              print('Debug - Converting YOLO box: $box');
+              return BoundingBox.fromJson(box);
+            } catch (boxError) {
+              print('Error converting individual YOLO box: $boxError');
+              print('Problematic box data: $box');
+              
+              // Create a fallback box with the data we have
+              return BoundingBox(
+                x: box['x'] is num ? (box['x'] as num).toDouble() : 0.0,
+                y: box['y'] is num ? (box['y'] as num).toDouble() : 0.0,
+                width: box['width'] is num ? (box['width'] as num).toDouble() : 0.1,
+                height: box['height'] is num ? (box['height'] as num).toDouble() : 0.1,
+                label: box['label']?.toString() ?? 'unknown',
+                source: AnnotationSource.ai,
+                confidence: box['confidence'] is num ? (box['confidence'] as num).toDouble() : 0.5,
+                isVerified: box['isVerified'] == true,
+              );
+            }
           }).toList();
           
           image = image.copyWith(yoloPredictions: boxes);
+          print('Debug - Successfully processed ${boxes.length} YOLO predictions');
         } catch (e) {
           print('Error processing YOLO predictions for ${i['filename']}: $e');
+          print('Full error details: ${e.toString()}');
+          print('Raw YOLO predictions data: ${i['yolo_predictions']}');
         }
+      } else {
+        // If yolo_predictions is null or empty, log this for debugging
+        print('Debug - No YOLO predictions for ${i['filename']}: containsKey=${i.containsKey('yolo_predictions')}, value=${i['yolo_predictions']}');
       }
 
       // Load ONE-SHOT predictions if they exist

@@ -1,5 +1,11 @@
 import 'dart:convert';
 
+enum ModelDisplayType {
+  yolo,
+  oneShot,
+  both
+}
+
 class AnnotatedImage {
   //Filepath where we can access the image
   final String filepath;

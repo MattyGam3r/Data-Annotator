@@ -253,7 +253,6 @@ class FewShotModelTrainer:
             ])
             
             image = Image.open(img_path).convert('RGB')
-            original_width, original_height = image.size
             image_tensor = transform(image).unsqueeze(0).to(device)
             
             # Get predictions
@@ -261,41 +260,17 @@ class FewShotModelTrainer:
                 outputs = model(image_tensor)
                 predictions = outputs[0].cpu().numpy()
             
-            # Convert predictions to bounding boxes
+            # Convert predictions to class labels with confidence
             results = []
             for i, (class_name, confidence) in enumerate(zip(class_names, predictions)):
                 if confidence > 0.5:  # Confidence threshold
                     logger.info(f"Prediction: class={class_name}, conf={confidence:.2f}")
                     
-                    # Create a more precise bounding box around the center of the image
-                    # Use 40% of image width/height as default, with some variation
-                    width_ratio = 0.4 + random.uniform(-0.1, 0.1)  # 30-50% of image width
-                    height_ratio = 0.4 + random.uniform(-0.1, 0.1)  # 30-50% of image height
-                    
-                    # Center the box by default
-                    width = width_ratio
-                    height = height_ratio
-                    x = 0.5 - (width / 2)  # Center the box horizontally
-                    y = 0.5 - (height / 2)  # Center the box vertically
-                    
-                    # Ensure box stays within image boundaries and has minimum size
-                    x = max(0.01, min(0.99 - width, x))
-                    y = max(0.01, min(0.99 - height, y))
-                    width = max(0.1, min(0.8, width))
-                    height = max(0.1, min(0.8, height))
-                    
-                    logger.info(f"Generated box: x={x:.4f}, y={y:.4f}, width={width:.4f}, height={height:.4f}")
-                    
-                    # Add the prediction
+                    # Add the class prediction without bounding box information
                     results.append({
-                        'x': float(x),
-                        'y': float(y),
-                        'width': float(width),
-                        'height': float(height),
                         'label': class_name,
                         'confidence': float(confidence),
                         'source': 'ai',
-                        'isVerified': False
                     })
             
             return results

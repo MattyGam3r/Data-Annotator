@@ -150,22 +150,19 @@ def get_image(filename):
 def save_annotations():
     print("Debug - Received save_annotations request")  # Debug log
     data = request.json
-    print(f"Debug - Request data: {data}")  # Debug log
-    
     filename = data.get('filename')
     annotations = data.get('annotations')
     is_fully_annotated = data.get('isFullyAnnotated', False)
     
-    print(f"Debug - Filename: {filename}")  # Debug log
-    print(f"Debug - Annotations: {annotations}")  # Debug log
-    print(f"Debug - Is fully annotated: {is_fully_annotated}")  # Debug log
-    
-    if not filename or filename.strip() == '':
+    if not filename:
         return jsonify({"error": "Filename is required"}), 400
     
     # Extract just the filename part (remove any URL components)
     filename = filename.split('/')[-1]
-    print(f"Debug - Extracted filename: {filename}")  # Debug log
+    
+    print(f"Debug - Filename: {filename}")  # Debug log
+    print(f"Debug - Annotations: {annotations}")  # Debug log
+    print(f"Debug - Is fully annotated: {is_fully_annotated}")  # Debug log
     
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
@@ -173,8 +170,12 @@ def save_annotations():
     try:
         # If annotations is empty or None, set it to NULL in the database
         if not annotations:
-            c.execute("UPDATE images SET annotations = NULL, is_fully_annotated = ? WHERE filename = ?", 
-                     (is_fully_annotated, filename))
+            if is_fully_annotated:
+                c.execute("UPDATE images SET annotations = NULL, is_fully_annotated = ?, uncertainty_score = NULL WHERE filename = ?", 
+                         (is_fully_annotated, filename))
+            else:
+                c.execute("UPDATE images SET annotations = NULL, is_fully_annotated = ? WHERE filename = ?", 
+                         (is_fully_annotated, filename))
         else:
             # Convert annotations to JSON string if it's not already
             if not isinstance(annotations, str):
@@ -192,8 +193,12 @@ def save_annotations():
                 annotations = json.dumps(annotations)
                 print(f"Debug - Converted annotations to JSON: {annotations}")  # Debug log
             
-            c.execute("UPDATE images SET annotations = ?, is_fully_annotated = ? WHERE filename = ?", 
-                     (annotations, is_fully_annotated, filename))
+            if is_fully_annotated:
+                c.execute("UPDATE images SET annotations = ?, is_fully_annotated = ?, uncertainty_score = NULL WHERE filename = ?", 
+                         (annotations, is_fully_annotated, filename))
+            else:
+                c.execute("UPDATE images SET annotations = ?, is_fully_annotated = ? WHERE filename = ?", 
+                         (annotations, is_fully_annotated, filename))
         
         conn.commit()
         
@@ -405,17 +410,103 @@ def train_model():
                             
                         print(f"Debug - Got {len(predictions)} predictions for {filename}")
                         
+                        # Convert predictions to handle numpy types
+                        def convert_numpy_types(obj):
+                            import numpy as np
+                            if isinstance(obj, dict):
+                                return {k: convert_numpy_types(v) for k, v in obj.items()}
+                            elif isinstance(obj, list):
+                                return [convert_numpy_types(i) for i in obj]
+                            elif isinstance(obj, np.integer):
+                                return int(obj)
+                            elif isinstance(obj, np.floating):
+                                return float(obj)
+                            elif isinstance(obj, np.ndarray):
+                                return convert_numpy_types(obj.tolist())
+                            else:
+                                return obj
+                        
+                        # Convert all NumPy types to native Python types
+                        predictions = convert_numpy_types(predictions)
+                        
                         # Save predictions
-                        cursor.execute(f'''
-                            UPDATE images 
-                            SET {column} = ?
-                            WHERE filename = ?
-                        ''', (json.dumps(predictions), filename))
-                        conn.commit()
+                        try:
+                            # Check if we can serialize the predictions
+                            json_predictions = json.dumps(predictions)
+                            print(f"Debug - Successfully serialized {len(predictions)} predictions ({len(json_predictions)} bytes)")
+                            
+                            # Log a sample prediction
+                            if len(predictions) > 0:
+                                print(f"Debug - First prediction sample: {json.dumps(predictions[0])}")
+                            
+                            print(f"Debug - Updating {column} for {filename} with {len(predictions)} predictions")
+                            cursor.execute(f'''
+                                UPDATE images 
+                                SET {column} = ?
+                                WHERE filename = ?
+                            ''', (json_predictions, filename))
+                            
+                            # Log row count to see if update was successful
+                            print(f"Debug - Database rows affected: {cursor.rowcount}")
+                            
+                            conn.commit()
+                            
+                            # Verify the update worked
+                            cursor.execute(f"SELECT {column} FROM images WHERE filename = ?", (filename,))
+                            result = cursor.fetchone()
+                            if result and result[0]:
+                                stored_preds = json.loads(result[0])
+                                print(f"Debug - Verified {len(stored_preds)} predictions stored in database for {filename}")
+                            else:
+                                print(f"Debug - WARNING: Failed to store predictions in database for {filename}")
+                                
+                                # Try a direct SELECT to see what might be in the database
+                                cursor.execute(f"SELECT id, filename, {column} FROM images WHERE filename = ?", (filename,))
+                                debug_result = cursor.fetchone()
+                                if debug_result:
+                                    print(f"Debug - Database record: id={debug_result[0]}, filename={debug_result[1]}, has_predictions={bool(debug_result[2])}")
+                                else:
+                                    print(f"Debug - No record found in database for {filename}")
+                                
+                        except Exception as json_error:
+                            print(f"Debug - Error handling JSON data: {str(json_error)}")
+                            
+                            # Try to sanitize the predictions
+                            sanitized_predictions = []
+                            for pred in predictions:
+                                # Ensure all values are basic Python types
+                                sanitized_pred = {
+                                    'x': float(pred.get('x', 0.0)),
+                                    'y': float(pred.get('y', 0.0)),
+                                    'width': float(pred.get('width', 0.0)),
+                                    'height': float(pred.get('height', 0.0)),
+                                    'label': str(pred.get('label', '')),
+                                    'confidence': float(pred.get('confidence', 0.0)),
+                                    'source': 'ai',
+                                    'isVerified': False
+                                }
+                                sanitized_predictions.append(sanitized_pred)
+                            
+                            # Try serializing again
+                            json_predictions = json.dumps(sanitized_predictions)
+                            print(f"Debug - Successfully serialized sanitized predictions: {len(json_predictions)} bytes")
+                            
+                            # Update with sanitized predictions
+                            cursor.execute(f'''
+                                UPDATE images 
+                                SET {column} = ?
+                                WHERE filename = ?
+                            ''', (json_predictions, filename))
+                            conn.commit()
+                            
+                            print(f"Debug - Stored sanitized predictions in database")
+                            
                         print(f"Debug - Saved predictions for {filename}")
                         
                     except Exception as e:
                         print(f"Error processing {filename}: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
                         continue
                 
                 # Update uncertainty scores after training
@@ -618,6 +709,7 @@ def predict():
     
     # Get predictions from the selected model
     print(f"Debug - Getting predictions for {filename} using {model_type} model")
+    conn = None
     try:
         if model_type == 'few_shot':
             predictions = FewShotModelTrainer.predict(filename)
@@ -652,18 +744,124 @@ def predict():
         # Log prediction results
         print(f"Debug - Got {len(predictions)} predictions for {filename}")
         
+        # Ensure filename doesn't have path components
+        clean_filename = filename.split('/')[-1]
+        print(f"Debug - Using clean filename for DB update: {clean_filename}")
+        
         # Store predictions in the database
         conn = sqlite3.connect(DATABASE)
         c = conn.cursor()
-        c.execute(f"UPDATE images SET {column} = ? WHERE filename = ?", 
-                 (json.dumps(predictions), filename))
-        conn.commit()
-        conn.close()
+        
+        # First verify the image exists in the database
+        c.execute("SELECT id FROM images WHERE filename = ?", (clean_filename,))
+        if not c.fetchone():
+            print(f"Warning - Image {clean_filename} not found in database, adding it")
+            c.execute("INSERT INTO images (filename) VALUES (?)", (clean_filename,))
+        
+        # Convert predictions to JSON string
+        try:
+            # First check if we can serialize the predictions
+            json_predictions = json.dumps(predictions)
+            print(f"Debug - Successfully serialized predictions to JSON: {len(json_predictions)} bytes")
+            
+            # Log a sample of the JSON for debugging
+            if len(predictions) > 0:
+                print(f"Debug - First prediction sample: {json.dumps(predictions[0])}")
+            
+            # Update predictions in the database
+            print(f"Debug - Updating {column} for {clean_filename} with {len(predictions)} predictions")
+            c.execute(f"UPDATE images SET {column} = ? WHERE filename = ?", 
+                     (json_predictions, clean_filename))
+            
+            # Log row count to see if update was successful
+            print(f"Debug - Database rows affected: {c.rowcount}")
+            
+            # Commit changes
+            conn.commit()
+            
+            # Verify the update
+            c.execute(f"SELECT {column} FROM images WHERE filename = ?", (clean_filename,))
+            result = c.fetchone()
+            if result and result[0]:
+                stored_preds = json.loads(result[0])
+                print(f"Debug - Verified predictions stored in database for {clean_filename}: {len(stored_preds)} predictions")
+            else:
+                print(f"Debug - WARNING: Failed to verify predictions in database for {clean_filename}")
+                
+                # Try a direct SELECT to see what might be in the database
+                c.execute(f"SELECT id, filename, {column} FROM images WHERE filename = ?", (clean_filename,))
+                debug_result = c.fetchone()
+                if debug_result:
+                    print(f"Debug - Database record: id={debug_result[0]}, filename={debug_result[1]}, has_predictions={bool(debug_result[2])}")
+                else:
+                    print(f"Debug - No record found in database for {clean_filename}")
+                    
+                    # Check if there are any records in the images table
+                    c.execute("SELECT COUNT(*) FROM images")
+                    count = c.fetchone()[0]
+                    print(f"Debug - Total records in images table: {count}")
+                    
+                    if count > 0:
+                        # Get the first few records to compare filenames
+                        c.execute("SELECT id, filename FROM images LIMIT 5")
+                        samples = c.fetchall()
+                        print(f"Debug - Sample records: {samples}")
+            
+        except Exception as json_error:
+            print(f"Debug - Error handling JSON data: {str(json_error)}")
+            print(f"Debug - Problematic predictions object: {type(predictions)}")
+            
+            # Try to handle specific serialization issues
+            sanitized_predictions = []
+            try:
+                for pred in predictions:
+                    # Ensure all values are basic Python types
+                    sanitized_pred = {
+                        'x': float(pred.get('x', 0.0)),
+                        'y': float(pred.get('y', 0.0)),
+                        'width': float(pred.get('width', 0.0)),
+                        'height': float(pred.get('height', 0.0)),
+                        'label': str(pred.get('label', '')),
+                        'confidence': float(pred.get('confidence', 0.0)),
+                        'source': 'ai',
+                        'isVerified': False
+                    }
+                    sanitized_predictions.append(sanitized_pred)
+                
+                # Try serializing again
+                json_predictions = json.dumps(sanitized_predictions)
+                print(f"Debug - Successfully serialized sanitized predictions: {len(json_predictions)} bytes")
+                
+                # Update with sanitized predictions
+                c.execute(f"UPDATE images SET {column} = ? WHERE filename = ?", 
+                         (json_predictions, clean_filename))
+                conn.commit()
+                
+                print(f"Debug - Stored sanitized predictions in database")
+            except Exception as sanitize_error:
+                print(f"Debug - Error sanitizing predictions: {str(sanitize_error)}")
+                raise
         
         return jsonify({"predictions": predictions, "status": "success"})
     except Exception as e:
         print(f"Error in prediction: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        # If we're in a transaction, roll it back
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
         return jsonify({"error": str(e), "predictions": []}), 500
+    finally:
+        # Always close the connection
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 @app.route("/mark_complete", methods=["POST"])
 def mark_complete():
@@ -681,7 +879,7 @@ def mark_complete():
     c = conn.cursor()
     
     try:
-        c.execute("UPDATE images SET is_fully_annotated = 1 WHERE filename = ?", (filename,))
+        c.execute("UPDATE images SET is_fully_annotated = 1, uncertainty_score = NULL WHERE filename = ?", (filename,))
         conn.commit()
         
         if c.rowcount == 0:
@@ -843,64 +1041,50 @@ def calculate_uncertainty_score(yolo_preds, few_shot_preds):
     if not yolo_preds or not few_shot_preds:
         return 0.8  # High uncertainty when only one model predicts
     
-    # Factor 1: Model disagreement (IoU-based)
-    total_iou = 0
-    total_pairs = 0
-    confidence_diff_sum = 0
+    # Extract labels from predictions
+    yolo_labels = [pred['label'] for pred in yolo_preds]
     
-    for yolo_box in yolo_preds:
-        for few_shot_box in few_shot_preds:
-            if yolo_box['label'] == few_shot_box['label']:
-                # Add confidence difference to our uncertainty metric
-                confidence_diff_sum += abs(yolo_box.get('confidence', 0.5) - few_shot_box.get('confidence', 0.5))
-                
-                # Calculate IoU
-                yolo_area = yolo_box['width'] * yolo_box['height']
-                few_shot_area = few_shot_box['width'] * few_shot_box['height']
-                
-                # Calculate intersection
-                x_left = max(yolo_box['x'], few_shot_box['x'])
-                y_top = max(yolo_box['y'], few_shot_box['y'])
-                x_right = min(yolo_box['x'] + yolo_box['width'], few_shot_box['x'] + few_shot_box['width'])
-                y_bottom = min(yolo_box['y'] + yolo_box['height'], few_shot_box['y'] + few_shot_box['height'])
-                
-                if x_right > x_left and y_bottom > y_top:
-                    intersection_area = (x_right - x_left) * (y_bottom - y_top)
-                    union_area = yolo_area + few_shot_area - intersection_area
-                    iou = intersection_area / union_area if union_area > 0 else 0
-                    total_iou += iou
-                    total_pairs += 1
+    # For few-shot predictions, we might have either old-style bounding box predictions 
+    # or new-style label-only predictions
+    if 'x' in few_shot_preds[0] if few_shot_preds else False:
+        # Old style - extract labels from bounding boxes
+        few_shot_labels = [pred['label'] for pred in few_shot_preds]
+    else:
+        # New style - directly use labels
+        few_shot_labels = [pred['label'] for pred in few_shot_preds]
     
-    # Factor 2: Average confidence of predictions
-    yolo_conf_avg = sum(box.get('confidence', 0.5) for box in yolo_preds) / len(yolo_preds) if yolo_preds else 0
-    few_shot_conf_avg = sum(box.get('confidence', 0.5) for box in few_shot_preds) / len(few_shot_preds) if few_shot_preds else 0
-    avg_confidence = (yolo_conf_avg + few_shot_conf_avg) / 2
+    # Get unique labels from both models
+    yolo_label_set = set(yolo_labels)
+    few_shot_label_set = set(few_shot_labels)
+    all_labels = yolo_label_set.union(few_shot_label_set)
+    common_labels = yolo_label_set.intersection(few_shot_label_set)
     
-    # Low confidence means high uncertainty
-    confidence_uncertainty = 1 - avg_confidence
-    
-    # Factor 3: IoU-based uncertainty
-    avg_iou = total_iou / total_pairs if total_pairs > 0 else 0
-    iou_uncertainty = 1 - avg_iou
-    
-    # Factor 4: Label disagreement
-    yolo_labels = set(box['label'] for box in yolo_preds)
-    few_shot_labels = set(box['label'] for box in few_shot_preds)
-    all_labels = yolo_labels.union(few_shot_labels)
-    common_labels = yolo_labels.intersection(few_shot_labels)
+    # Calculate label disagreement ratio
     label_disagreement = 1 - (len(common_labels) / len(all_labels) if all_labels else 0)
     
-    # Factor 5: Prediction count difference
-    pred_count_diff = abs(len(yolo_preds) - len(few_shot_preds))
+    # Calculate prediction count difference
+    pred_count_diff = abs(len(yolo_labels) - len(few_shot_labels))
     count_disagreement = min(0.2, pred_count_diff * 0.1)  # Cap at 0.2
+    
+    # Calculate average confidence for each model
+    yolo_conf_avg = sum(pred.get('confidence', 0.5) for pred in yolo_preds) / len(yolo_preds) if yolo_preds else 0
+    
+    # For few-shot confidence calculation, handle both formats
+    if 'x' in few_shot_preds[0] if few_shot_preds else False:
+        # Old style with bounding boxes
+        few_shot_conf_avg = sum(pred.get('confidence', 0.5) for pred in few_shot_preds) / len(few_shot_preds) if few_shot_preds else 0
+    else:
+        # New style with just labels
+        few_shot_conf_avg = sum(pred.get('confidence', 0.5) for pred in few_shot_preds) / len(few_shot_preds) if few_shot_preds else 0
+    
+    avg_confidence = (yolo_conf_avg + few_shot_conf_avg) / 2
+    confidence_uncertainty = 1 - avg_confidence  # Low confidence means high uncertainty
     
     # Calculate final uncertainty score with weighted factors
     uncertainty = (
-        0.3 * iou_uncertainty +
-        0.3 * label_disagreement +
-        0.2 * confidence_uncertainty +
-        0.1 * count_disagreement +
-        0.1 * min(1.0, confidence_diff_sum / max(1, total_pairs))  # Confidence difference between matching boxes
+        0.6 * label_disagreement +  # Increased weight on label disagreement
+        0.3 * confidence_uncertainty +  # Increased weight on confidence
+        0.1 * count_disagreement  # Reduced weight on count disagreement
     )
     
     return min(1.0, uncertainty)  # Cap at 1.0
@@ -933,12 +1117,12 @@ def get_predictions_with_uncertainty():
         print(f"Debug - Models are available but not ready yet, forcing ready state")
         
         # Force models ready if they're available but not ready
-        if yolo_status['is_available'] and not yolo_status['training_in_progress'] and not yolo_status.get('is_ready', False):
+        if yolo_status['is_available'] and not yolo_status['training_in_progress']:
             with YOLOModel.LOCK:
                 YOLOModel.MODEL_READY = True
                 print(f"Debug - Forced YOLO model ready state to True")
                 
-        if few_shot_status['is_available'] and not few_shot_status['training_in_progress'] and not few_shot_status.get('is_ready', False):
+        if few_shot_status['is_available'] and not few_shot_status['training_in_progress']:
             with FewShotModelTrainer.LOCK:
                 FewShotModelTrainer.MODEL_READY = True
                 print(f"Debug - Forced FewShot model ready state to True")
@@ -975,14 +1159,20 @@ def get_predictions_with_uncertainty():
         # Calculate uncertainty score
         uncertainty_score = calculate_uncertainty_score(yolo_predictions, few_shot_predictions)
         
-        # Store uncertainty score in database
+        # Convert predictions to JSON strings
+        yolo_json = json.dumps(yolo_predictions)
+        few_shot_json = json.dumps(few_shot_predictions)
+        
+        # Store uncertainty score and predictions in database
         conn = sqlite3.connect(DATABASE)
         c = conn.cursor()
         c.execute("""
             UPDATE images 
-            SET uncertainty_score = ? 
+            SET uncertainty_score = ?,
+                yolo_predictions = ?,
+                one_shot_predictions = ?
             WHERE filename = ?
-        """, (float(uncertainty_score), filename))  # Ensure uncertainty_score is a native Python float
+        """, (float(uncertainty_score), yolo_json, few_shot_json, filename))  # Ensure uncertainty_score is a native Python float
         conn.commit()
         conn.close()
         
@@ -1156,16 +1346,22 @@ def update_all_uncertainty_scores():
                 # Calculate uncertainty score
                 uncertainty_score = calculate_uncertainty_score(yolo_predictions, few_shot_predictions)
                 
-                # Update uncertainty score in database
+                # Convert predictions to JSON strings
+                yolo_json = json.dumps(yolo_predictions)
+                few_shot_json = json.dumps(few_shot_predictions)
+                
+                # Update uncertainty score and predictions in database
                 cursor.execute('''
                     UPDATE images 
-                    SET uncertainty_score = ? 
+                    SET uncertainty_score = ?,
+                        yolo_predictions = ?,
+                        one_shot_predictions = ?
                     WHERE filename = ?
-                ''', (float(uncertainty_score), filename))
+                ''', (float(uncertainty_score), yolo_json, few_shot_json, filename))
                 conn.commit()
                 
                 updated_count += 1
-                print(f"Debug - Updated uncertainty score for {filename}: {uncertainty_score}")
+                print(f"Debug - Updated uncertainty score and predictions for {filename}: {uncertainty_score}")
                 
             except Exception as e:
                 print(f"Error updating uncertainty score for {filename}: {str(e)}")
@@ -1177,6 +1373,59 @@ def update_all_uncertainty_scores():
     except Exception as e:
         print(f"Error updating all uncertainty scores: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+@app.route("/auto_training_settings", methods=["GET", "POST"])
+def auto_training_settings():
+    """Get or update auto-training threshold settings"""
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    # Ensure settings table exists
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+    ''')
+    conn.commit()
+    
+    if request.method == "POST":
+        try:
+            data = request.json
+            threshold = data.get('threshold', 0)
+            
+            # Save the threshold value
+            c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('auto_training_threshold', ?)", 
+                     (str(threshold),))
+            conn.commit()
+            
+            return jsonify({"message": "Auto-training threshold saved successfully", "threshold": threshold})
+            
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            conn.close()
+    else:  # GET
+        try:
+            # Get the current threshold value
+            c.execute("SELECT value FROM settings WHERE key = 'auto_training_threshold'")
+            row = c.fetchone()
+            
+            if row:
+                threshold = int(row[0])
+            else:
+                # Default to 0 (disabled) if not set
+                threshold = 0
+                c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('auto_training_threshold', '0')")
+                conn.commit()
+                
+            return jsonify({"threshold": threshold})
+            
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        finally:
+            conn.close()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

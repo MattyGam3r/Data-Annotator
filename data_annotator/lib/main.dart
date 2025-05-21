@@ -69,10 +69,13 @@ class _HomePageState extends State<HomePage> {
   Map<String, int> tagFrequencies = {};
   String? selectedTag;
   final YoloService _yoloService = YoloService();
+  ModelDisplayType selectedModelType = ModelDisplayType.both; // Default to showing both models
 
   @override
   void initState() {
     super.initState();
+    // Initialize YoloService to load auto-training settings
+    _yoloService.initialize();
     // Set up keyboard listener for number keys
     HardwareKeyboard.instance.addHandler(_handleKeyPress);
   }
@@ -142,16 +145,48 @@ class _HomePageState extends State<HomePage> {
     // Start with user annotations
     currentBoxes = List<BoundingBox>.from(matchingImage.boundingBoxes);
     
-    // Add YOLO predictions if they exist
-    if (matchingImage.yoloPredictions != null) {
-      currentBoxes.addAll(matchingImage.yoloPredictions);
-    }
-    
-    // Add ONE-SHOT predictions if they exist
-    if (matchingImage.oneShotPredictions != null) {
-      currentBoxes.addAll(matchingImage.oneShotPredictions);
-    }
+    // Add model predictions based on selection
+    _updateBoxesFromModelSelection(matchingImage);
   });
+}
+
+// Helper method to update boxes based on model selection
+void _updateBoxesFromModelSelection(AnnotatedImage image) {
+  // Start with user annotations
+  currentBoxes = List<BoundingBox>.from(image.boundingBoxes);
+  
+  print('Debug - Human Annotations: ${image.boundingBoxes.length}');
+  print('Debug - YOLO Predictions: ${image.yoloPredictions.length}');
+  print('Debug - ONE-SHOT Predictions: ${image.oneShotPredictions.length}');
+  
+  // Check if predictions have proper labels
+  if (image.yoloPredictions.isNotEmpty) {
+    print('Debug - YOLO prediction sample: ${image.yoloPredictions.first.label}');
+  }
+  if (image.oneShotPredictions.isNotEmpty) {
+    print('Debug - ONE-SHOT prediction sample: ${image.oneShotPredictions.first.label}');
+  }
+  
+  // Add predictions based on selection
+  if (selectedModelType == ModelDisplayType.both || selectedModelType == ModelDisplayType.yolo) {
+    // Filter YOLO predictions - only include if the label contains "YOLO" 
+    List<BoundingBox> filteredYoloPredictions = image.yoloPredictions
+        .where((box) => box.label.contains("YOLO") || !box.label.contains("ONE-SHOT"))
+        .toList();
+    currentBoxes.addAll(filteredYoloPredictions);
+    print('Debug - Added ${filteredYoloPredictions.length} YOLO predictions');
+  }
+  
+  if (selectedModelType == ModelDisplayType.both || selectedModelType == ModelDisplayType.oneShot) {
+    // Filter ONE-SHOT predictions - only include if the label contains "ONE-SHOT"
+    List<BoundingBox> filteredOneShotPredictions = image.oneShotPredictions
+        .where((box) => box.label.contains("ONE-SHOT"))
+        .toList();
+    currentBoxes.addAll(filteredOneShotPredictions);
+    print('Debug - Added ${filteredOneShotPredictions.length} ONE-SHOT predictions');
+  }
+  
+  print('Debug - Total boxes after selection: ${currentBoxes.length}');
 }
 
   void _updateTagFrequencies(List<AnnotatedImage> images) {
@@ -209,6 +244,7 @@ class _HomePageState extends State<HomePage> {
         title: Text("Data Annotator"),
         backgroundColor: Theme.of(context).colorScheme.primary,
         actions: [
+          // Model selector dropdown moved to separate widget for better UI
           PopupMenuButton<String>(
             onSelected: (value) async {
               if (value == 'reset') {
@@ -291,6 +327,15 @@ class _HomePageState extends State<HomePage> {
                 currentBoxes = List<BoundingBox>.from(boxes);
               });
             },
+            modelDisplayType: selectedModelType,
+            onModelDisplayTypeChanged: (ModelDisplayType newValue) {
+              setState(() {
+                selectedModelType = newValue;
+                if (selectedImage != null) {
+                  _updateBoxesFromModelSelection(selectedImage!);
+                }
+              });
+            },
           ),
         ],
       ),
@@ -308,6 +353,8 @@ class ImageLabellerArea extends StatefulWidget {
   final Function(String) onTagSelected;
   final AnnotatedImage? selectedImage;
   final Function(List<BoundingBox>)? onBoxesChanged;
+  final ModelDisplayType modelDisplayType;
+  final Function(ModelDisplayType) onModelDisplayTypeChanged;
 
   const ImageLabellerArea({
     super.key,
@@ -320,6 +367,8 @@ class ImageLabellerArea extends StatefulWidget {
     required this.onTagSelected,
     this.selectedImage,
     this.onBoxesChanged,
+    required this.modelDisplayType,
+    required this.onModelDisplayTypeChanged,
   });
 
   @override
@@ -358,16 +407,37 @@ class _ImageLabellerAreaState extends State<ImageLabellerArea> {
     final saved = await saveAnnotations(filename, widget.currentBoxes, isFullyAnnotated: true);
     
     if (saved) {
-      // Start training using the backend
-      final success = await startModelTraining();
-      
-      if (success) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Image marked as complete. Model training started!')),
-        );
+      // Check if we need to auto-train based on threshold
+      if (_yoloService.autoTrainingThreshold > 0) {
+        // Fetch latest images to count how many are fully annotated
+        final images = await fetchLatestImages();
+        if (images != null) {
+          final completedCount = images.where((img) => img.isFullyAnnotated).length;
+          
+          if (completedCount >= _yoloService.autoTrainingThreshold) {
+            // Auto-training threshold reached, start training
+            final success = await startModelTraining();
+            
+            if (success) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Auto-training threshold reached (${_yoloService.autoTrainingThreshold} images). Model training started with $completedCount completed images!')),
+              );
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Failed to start auto-training'), backgroundColor: Colors.red),
+              );
+            }
+          } else {
+            // Not enough completed images yet
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Image marked as complete. ${_yoloService.autoTrainingThreshold - completedCount} more needed for auto-training.')),
+            );
+          }
+        }
       } else {
+        // Auto-training is disabled, show regular success message
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to start model training'), backgroundColor: Colors.red),
+          SnackBar(content: Text('Image marked as complete.')),
         );
       }
     } else {
@@ -454,6 +524,35 @@ class _ImageLabellerAreaState extends State<ImageLabellerArea> {
                             });
                           }
                         },
+                      ),
+                      SizedBox(width: 16),
+                      // Model display selection dropdown
+                      Row(
+                        children: [
+                          Text("Show: ", style: TextStyle(fontWeight: FontWeight.bold)),
+                          DropdownButton<ModelDisplayType>(
+                            value: widget.modelDisplayType,
+                            onChanged: (ModelDisplayType? newValue) {
+                              if (newValue != null) {
+                                widget.onModelDisplayTypeChanged(newValue);
+                              }
+                            },
+                            items: [
+                              DropdownMenuItem(
+                                value: ModelDisplayType.both,
+                                child: Text('Both Models'),
+                              ),
+                              DropdownMenuItem(
+                                value: ModelDisplayType.yolo,
+                                child: Text('YOLO Only'),
+                              ),
+                              DropdownMenuItem(
+                                value: ModelDisplayType.oneShot,
+                                child: Text('One-Shot Only'),
+                              ),
+                            ],
+                          ),
+                        ],
                       ),
                     ],
                   ],

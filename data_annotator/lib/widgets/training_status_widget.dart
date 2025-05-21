@@ -23,6 +23,7 @@ class _TrainingStatusWidgetState extends State<TrainingStatusWidget> {
   double _augmentationProgress = 0.0;
   int _numAugmentations = 1;
   final TextEditingController _augmentationController = TextEditingController();
+  final TextEditingController _autoTrainingThresholdController = TextEditingController();
   bool _hasAugmentations = false;
   int _totalAugmentations = 0;
   Timer? _statusTimer;
@@ -33,7 +34,17 @@ class _TrainingStatusWidgetState extends State<TrainingStatusWidget> {
   void initState() {
     super.initState();
     _augmentationController.text = '1';
-    _checkModelStatus();
+    // Initialize with default value, will update when service is fully initialized
+    _autoTrainingThresholdController.text = '0';
+    
+    // First check model status and then update UI afterward
+    _checkModelStatus().then((_) {
+      // Now that service is initialized, update the field
+      setState(() {
+        _autoTrainingThresholdController.text = _yoloService.autoTrainingThreshold.toString();
+      });
+    });
+    
     // Start a periodic timer to update status
     _statusTimer = Timer.periodic(const Duration(seconds: 3), (_) => _checkModelStatus());
   }
@@ -43,6 +54,7 @@ class _TrainingStatusWidgetState extends State<TrainingStatusWidget> {
     _statusTimer?.cancel();
     _progressTimer?.cancel();
     _augmentationController.dispose();
+    _autoTrainingThresholdController.dispose();
     super.dispose();
   }
 
@@ -168,6 +180,71 @@ class _TrainingStatusWidgetState extends State<TrainingStatusWidget> {
     }
   }
 
+  void _showSettingsMenu() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Model Settings'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: _augmentationController,
+                decoration: const InputDecoration(
+                  labelText: 'Number of augmentations',
+                  border: OutlineInputBorder(),
+                ),
+                keyboardType: TextInputType.number,
+                onChanged: (value) {
+                  setState(() {
+                    _numAugmentations = int.tryParse(value) ?? 1;
+                  });
+                },
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _autoTrainingThresholdController,
+                decoration: const InputDecoration(
+                  labelText: 'Auto-training threshold (# of images)',
+                  border: OutlineInputBorder(),
+                  helperText: 'Set to 0 to disable auto-training',
+                ),
+                keyboardType: TextInputType.number,
+                onChanged: (value) {
+                  final threshold = int.tryParse(value) ?? 0;
+                  _yoloService.autoTrainingThreshold = threshold;
+                },
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: _isAugmenting ? null : () {
+                  Navigator.of(context).pop();
+                  _augmentImages();
+                },
+                child: Text(_isAugmenting ? 'Augmenting...' : 'Augment Images'),
+              ),
+              if (_isAugmenting) ...[
+                const SizedBox(height: 8),
+                LinearProgressIndicator(
+                  value: _augmentationProgress,
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Card(
@@ -177,9 +254,19 @@ class _TrainingStatusWidgetState extends State<TrainingStatusWidget> {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              'Model Status',
-              style: Theme.of(context).textTheme.titleMedium,
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Model Status',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.settings),
+                  onPressed: _showSettingsMenu,
+                  tooltip: 'Settings',
+                ),
+              ],
             ),
             const SizedBox(height: 16),
             Row(
@@ -266,37 +353,6 @@ class _TrainingStatusWidgetState extends State<TrainingStatusWidget> {
                 ),
               ],
             ),
-            const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _augmentationController,
-                    decoration: const InputDecoration(
-                      labelText: 'Number of augmentations',
-                      border: OutlineInputBorder(),
-                    ),
-                    keyboardType: TextInputType.number,
-                    onChanged: (value) {
-                      setState(() {
-                        _numAugmentations = int.tryParse(value) ?? 1;
-                      });
-                    },
-                  ),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: _isAugmenting ? null : _augmentImages,
-                  child: Text(_isAugmenting ? 'Augmenting...' : 'Augment Images'),
-                ),
-              ],
-            ),
-            if (_isAugmenting) ...[
-              const SizedBox(height: 8),
-              LinearProgressIndicator(
-                value: _augmentationProgress,
-              ),
-            ],
           ],
         ),
       ),
