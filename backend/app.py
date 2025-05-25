@@ -13,6 +13,8 @@ import subprocess
 from PIL import Image
 from threading import Thread
 import time
+import io
+import zipfile
 
 app = Flask(__name__)
 cors = CORS(app, 
@@ -1427,5 +1429,173 @@ def auto_training_settings():
         finally:
             conn.close()
 
+@app.route("/export_yolo", methods=["GET"])
+def export_yolo():
+    """
+    Export annotations in YOLO format as a ZIP file.
+    For images with annotations, use those. For unannotated images, use YOLO predictions.
+    """
+    try:
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
+        # Get all images from database
+        c.execute("SELECT filename, annotations, yolo_predictions FROM images")
+        rows = c.fetchall()
+        
+        # Create a zip file in memory
+        memory_file = io.BytesIO()
+        with zipfile.ZipFile(memory_file, 'w') as zf:
+            # Create directories in the zip
+            zf.writestr('data/images/', '')  # Images directory
+            zf.writestr('data/labels/', '')  # Labels directory
+            
+            # For each image, add the image and its label to the zip
+            for row in rows:
+                filename = row[0]
+                annotations = row[1]  # User annotations
+                yolo_predictions = row[2]  # YOLO predictions
+                
+                # Get the image path
+                image_path = os.path.join(UPLOAD_FOLDER, filename)
+                
+                # Check if image exists
+                if not os.path.exists(image_path):
+                    print(f"Image not found: {image_path}")
+                    continue
+                
+                # Add image to the zip
+                zf.write(image_path, f'data/images/{filename}')
+                
+                # Convert annotations to YOLO format
+                label_content = ""
+                
+                # Use user annotations if available, otherwise use YOLO predictions
+                if annotations and annotations != "null":
+                    boxes = json.loads(annotations)
+                    label_content = convert_to_yolo_format(boxes, image_path)
+                elif yolo_predictions and yolo_predictions != "null":
+                    boxes = json.loads(yolo_predictions)
+                    label_content = convert_to_yolo_format(boxes, image_path)
+                
+                # Add label file to the zip
+                label_filename = os.path.splitext(filename)[0] + '.txt'
+                zf.writestr(f'data/labels/{label_filename}', label_content)
+            
+            # Add a dataset.yaml file for configuration
+            yaml_content = create_dataset_yaml()
+            zf.writestr('data/dataset.yaml', yaml_content)
+        
+        memory_file.seek(0)
+        conn.close()
+        
+        return Response(
+            memory_file.getvalue(),
+            mimetype='application/zip',
+            headers={
+                'Content-Disposition': 'attachment; filename=yolo_dataset.zip'
+            }
+        )
+    
+    except Exception as e:
+        print(f"Error exporting YOLO dataset: {e}")
+        return jsonify({"error": str(e)}), 500
+
+def convert_to_yolo_format(boxes, image_path):
+    """
+    Convert bounding box annotations to YOLO format.
+    YOLO format: <class_id> <center_x> <center_y> <width> <height>
+    Where all values are normalized to [0, 1]
+    """
+    try:
+        # Get all unique labels across annotations
+        all_labels = set()
+        for box in boxes:
+            if isinstance(box, dict) and 'label' in box:
+                all_labels.add(box['label'])
+        
+        # Create a label map (assign numeric IDs to labels)
+        label_map = {label: idx for idx, label in enumerate(sorted(all_labels))}
+        
+        lines = []
+        for box in boxes:
+            if not isinstance(box, dict):
+                continue
+                
+            # Extract values (already normalized)
+            x = box.get('x', 0.0)
+            y = box.get('y', 0.0)
+            width = box.get('width', 0.0)
+            height = box.get('height', 0.0)
+            label = box.get('label', '')
+            
+            if not label or label not in label_map:
+                continue
+                
+            # Convert to YOLO format (center coordinates)
+            center_x = x + (width / 2)
+            center_y = y + (height / 2)
+            
+            # Add to output
+            class_id = label_map[label]
+            lines.append(f"{class_id} {center_x:.6f} {center_y:.6f} {width:.6f} {height:.6f}")
+        
+        return "\n".join(lines)
+    except Exception as e:
+        print(f"Error converting to YOLO format: {e}")
+        return ""
+
+def create_dataset_yaml():
+    """
+    Create a YAML configuration file for the dataset
+    """
+    # Get all unique labels from the database
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("SELECT annotations, yolo_predictions FROM images")
+    rows = c.fetchall()
+    
+    all_labels = set()
+    for row in rows:
+        annotations = row[0]
+        yolo_predictions = row[1]
+        
+        # Process annotations
+        if annotations and annotations != "null":
+            try:
+                boxes = json.loads(annotations)
+                for box in boxes:
+                    if isinstance(box, dict) and 'label' in box:
+                        all_labels.add(box['label'])
+            except:
+                pass
+                
+        # Process YOLO predictions
+        if yolo_predictions and yolo_predictions != "null":
+            try:
+                boxes = json.loads(yolo_predictions)
+                for box in boxes:
+                    if isinstance(box, dict) and 'label' in box:
+                        all_labels.add(box['label'])
+            except:
+                pass
+    
+    conn.close()
+    
+    # Sort labels to ensure consistent class IDs
+    sorted_labels = sorted(all_labels)
+    
+    # Create YAML content
+    yaml_content = "# YOLO dataset configuration\n"
+    yaml_content += "path: ../data  # Path to dataset\n"
+    yaml_content += f"train: images  # Train images\n"
+    yaml_content += f"val: images  # Validation images\n\n"
+    yaml_content += f"# Classes\n"
+    yaml_content += f"names:\n"
+    
+    for idx, label in enumerate(sorted_labels):
+        yaml_content += f"  {idx}: {label}\n"
+    
+    return yaml_content
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5001, debug=True)

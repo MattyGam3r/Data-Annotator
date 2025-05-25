@@ -9,6 +9,7 @@ import 'widgets/frequent_tags_panel.dart';
 import 'http-requests.dart';
 import 'widgets/training_status_widget.dart';
 import 'widgets/augmented_images_viewer.dart';
+import 'widgets/export_status_widget.dart';
 
 void main() {
   runApp(const MainApp());
@@ -70,6 +71,12 @@ class _HomePageState extends State<HomePage> {
   String? selectedTag;
   final YoloService _yoloService = YoloService();
   ModelDisplayType selectedModelType = ModelDisplayType.both; // Default to showing both models
+  bool _isModelTraining = false;
+  
+  // Export status
+  bool _isExporting = false;
+  String _exportStatusMessage = '';
+  bool _showExportStatus = false;
 
   @override
   void initState() {
@@ -304,38 +311,110 @@ void _updateBoxesFromModelSelection(AnnotatedImage image) {
               ),
             ],
           ),
+          // Add export button
+          IconButton(
+            icon: const Icon(Icons.download),
+            tooltip: 'Export YOLO Dataset',
+            onPressed: _isExporting ? null : () async {
+              setState(() {
+                _isExporting = true;
+                _exportStatusMessage = 'Exporting YOLO dataset...';
+                _showExportStatus = true;
+              });
+              
+              try {
+                await exportYoloData();
+                setState(() {
+                  _exportStatusMessage = 'Dataset exported successfully!';
+                });
+              } catch (e) {
+                setState(() {
+                  _exportStatusMessage = 'Error exporting dataset: ${e.toString()}';
+                });
+              } finally {
+                setState(() {
+                  _isExporting = false;
+                });
+                
+                // Hide the status message after 5 seconds
+                Future.delayed(const Duration(seconds: 5), () {
+                  if (mounted) {
+                    setState(() {
+                      _showExportStatus = false;
+                    });
+                  }
+                });
+              }
+            },
+          ),
+          // Training button
+          IconButton(
+            icon: const Icon(Icons.model_training),
+            tooltip: 'Train Model',
+            onPressed: _isModelTraining ? null : () async {
+              setState(() {
+                _isModelTraining = true;
+              });
+              
+              try {
+                await _yoloService.trainModel();
+                // Training is started - the actual status will be polled by the TrainingStatusWidget
+              } catch (e) {
+                print('Error starting training: $e');
+              } finally {
+                setState(() {
+                  _isModelTraining = false;
+                });
+              }
+            },
+          ),
         ],
       ),
-      body: Row(
+      body: Column(
         children: [
-          ImageViewer(
-            key: _imageViewerKey,
-            onImageSelected: onImageSelected,
-            showBoxes: true,
-          ),
-          ImageLabellerArea(
-            selectedImageUrl: selectedImageUrl,
-            currentBoxes: currentBoxes,
-            onBoxAdded: onBoxAdded,
-            onSaveSuccess: refreshImages,
-            tagFrequencies: tagFrequencies,
-            selectedTag: selectedTag,
-            onTagSelected: selectTag,
-            selectedImage: selectedImage,
-            onBoxesChanged: (boxes) {
-              setState(() {
-                currentBoxes = List<BoundingBox>.from(boxes);
-              });
-            },
-            modelDisplayType: selectedModelType,
-            onModelDisplayTypeChanged: (ModelDisplayType newValue) {
-              setState(() {
-                selectedModelType = newValue;
-                if (selectedImage != null) {
-                  _updateBoxesFromModelSelection(selectedImage!);
-                }
-              });
-            },
+          // Export status indicator
+          if (_showExportStatus)
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: ExportStatusWidget(
+                message: _exportStatusMessage,
+                isExporting: _isExporting,
+              ),
+            ),
+          Expanded(
+            child: Row(
+              children: [
+                ImageViewer(
+                  key: _imageViewerKey,
+                  onImageSelected: onImageSelected,
+                  showBoxes: true,
+                ),
+                ImageLabellerArea(
+                  selectedImageUrl: selectedImageUrl,
+                  currentBoxes: currentBoxes,
+                  onBoxAdded: onBoxAdded,
+                  onSaveSuccess: refreshImages,
+                  tagFrequencies: tagFrequencies,
+                  selectedTag: selectedTag,
+                  onTagSelected: selectTag,
+                  selectedImage: selectedImage,
+                  onBoxesChanged: (boxes) {
+                    setState(() {
+                      currentBoxes = List<BoundingBox>.from(boxes);
+                    });
+                  },
+                  modelDisplayType: selectedModelType,
+                  onModelDisplayTypeChanged: (ModelDisplayType newValue) {
+                    setState(() {
+                      selectedModelType = newValue;
+                      if (selectedImage != null) {
+                        _updateBoxesFromModelSelection(selectedImage!);
+                      }
+                    });
+                  },
+                ),
+              ],
+            ),
           ),
         ],
       ),

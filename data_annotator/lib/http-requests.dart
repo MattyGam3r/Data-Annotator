@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dio/dio.dart';
 import 'package:file_picker/file_picker.dart';
@@ -282,5 +283,33 @@ Future<bool> markImageComplete(String filename) async {
   } on DioException catch (e) {
     print('Error marking image as complete: ${e.message}');
     return false;
+  }
+}
+
+Future<void> exportYoloData() async {
+  try {
+    var dio = Dio();
+    var response = await dio.get(
+      'http://localhost:5001/export_yolo',
+      options: Options(
+        responseType: ResponseType.bytes,
+      ),
+    );
+    
+    // Save the file using file_picker
+    var path = await FilePicker.platform.saveFile(
+      dialogTitle: 'Save YOLO Dataset',
+      fileName: 'yolo_dataset.zip',
+      type: FileType.any,
+      lockParentWindow: true,
+    );
+    
+    if (path != null) {
+      // Write the file to disk
+      var file = File(path);
+      await file.writeAsBytes(response.data);
+    }
+  } on DioException catch (e) {
+    print('Error exporting YOLO data: ${e.message}');
   }
 }
