@@ -368,13 +368,14 @@ class YOLOModel:
                 data='datasets/dataset.yaml',
                 epochs=20,
                 imgsz=640,
-                batch=32,
-                patience=5,
+                batch=16,
+                patience=10,
                 project='model',
                 name='training',
                 exist_ok=True,
                 verbose=True,
-                workers=0,
+                workers=1,
+                lr0=0.0001,
             )
             
             # Copy the best model
