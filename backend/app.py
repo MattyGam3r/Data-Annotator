@@ -31,6 +31,9 @@ DATABASE = 'metadata.db'
 
 logger = logging.getLogger(__name__)
 
+# Global variable to track when data collection started
+COLLECT_RESULTS_START_TIME = None
+
 def init_db():
     conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
@@ -47,10 +50,160 @@ def init_db():
             UNIQUE (filename)
         );
     ''')
+    
+    # Create results table for collect results mode
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            model_type TEXT NOT NULL,
+            total_images_labeled INTEGER NOT NULL,
+            overall_confidence FLOAT NOT NULL,
+            time_since_last_training INTEGER DEFAULT NULL,
+            confidence_range FLOAT NOT NULL,
+            total_time_elapsed INTEGER NOT NULL
+        );
+    ''')
+    
+    # Create settings table if it doesn't exist
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    ''')
+    
     conn.commit()
     conn.close()
 
+def init_results_collection():
+    """Initialize the results collection start time"""
+    global COLLECT_RESULTS_START_TIME
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    # Check if collect results mode is enabled
+    c.execute("SELECT value FROM settings WHERE key = 'collect_results_mode'")
+    row = c.fetchone()
+    if row and row[0] == 'true':
+        # Check if we already have a start time
+        c.execute("SELECT value FROM settings WHERE key = 'collect_results_start_time'")
+        start_row = c.fetchone()
+        if start_row:
+            COLLECT_RESULTS_START_TIME = float(start_row[0])
+        else:
+            # Set the start time to now
+            import time
+            COLLECT_RESULTS_START_TIME = time.time()
+            c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('collect_results_start_time', ?)", 
+                     (str(COLLECT_RESULTS_START_TIME),))
+            conn.commit()
+    conn.close()
+
+def collect_results_middleware(model_type):
+    """
+    Collect and store results after model training completion.
+    This middleware calculates various metrics and stores them in the results table.
+    """
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    try:
+        # Check if collect results mode is enabled
+        c.execute("SELECT value FROM settings WHERE key = 'collect_results_mode'")
+        row = c.fetchone()
+        if not row or row[0] != 'true':
+            print("Debug - Collect results mode is disabled, skipping data collection")
+            return
+            
+        print("Debug - Starting results collection middleware")
+        
+        # 1. Calculate total images labeled (marked as complete)
+        c.execute("SELECT COUNT(*) FROM images WHERE is_fully_annotated = 1")
+        total_images_labeled = c.fetchone()[0]
+        print(f"Debug - Total images labeled: {total_images_labeled}")
+        
+        # 2. Calculate overall confidence (1 - mean of all uncertainty scores)
+        c.execute("SELECT uncertainty_score FROM images WHERE uncertainty_score IS NOT NULL")
+        uncertainty_scores = [row[0] for row in c.fetchall()]
+        
+        if uncertainty_scores:
+            mean_uncertainty = sum(uncertainty_scores) / len(uncertainty_scores)
+            overall_confidence = 1.0 - mean_uncertainty
+            
+            # Calculate confidence range (max uncertainty - min uncertainty)
+            confidence_range = max(uncertainty_scores) - min(uncertainty_scores)
+        else:
+            overall_confidence = 0.0
+            confidence_range = 0.0
+        
+        print(f"Debug - Overall confidence: {overall_confidence}")
+        print(f"Debug - Confidence range: {confidence_range}")
+        
+        # 3. Calculate time since last model finished training
+        c.execute("SELECT timestamp FROM results ORDER BY timestamp DESC LIMIT 1")
+        last_result = c.fetchone()
+        
+        import time
+        current_time = time.time()
+        
+        if last_result:
+            # Parse the timestamp string to get seconds since epoch
+            import datetime
+            last_timestamp = datetime.datetime.fromisoformat(last_result[0].replace('Z', '+00:00'))
+            last_timestamp_seconds = last_timestamp.timestamp()
+            time_since_last_training = int(current_time - last_timestamp_seconds)
+        else:
+            time_since_last_training = 0  # First training session
+            
+        print(f"Debug - Time since last training: {time_since_last_training} seconds")
+        
+        # 4. Calculate total time elapsed since data collection started
+        global COLLECT_RESULTS_START_TIME
+        if COLLECT_RESULTS_START_TIME is None:
+            # Initialize start time if not set
+            c.execute("SELECT value FROM settings WHERE key = 'collect_results_start_time'")
+            start_row = c.fetchone()
+            if start_row:
+                COLLECT_RESULTS_START_TIME = float(start_row[0])
+            else:
+                COLLECT_RESULTS_START_TIME = current_time
+                c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('collect_results_start_time', ?)", 
+                         (str(COLLECT_RESULTS_START_TIME),))
+                conn.commit()
+        
+        total_time_elapsed = int(current_time - COLLECT_RESULTS_START_TIME)
+        print(f"Debug - Total time elapsed: {total_time_elapsed} seconds")
+        
+        # 5. Store results in the database
+        c.execute('''
+            INSERT INTO results (
+                model_type, 
+                total_images_labeled, 
+                overall_confidence, 
+                time_since_last_training, 
+                confidence_range, 
+                total_time_elapsed
+            ) VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            model_type,
+            total_images_labeled,
+            overall_confidence,
+            time_since_last_training if time_since_last_training > 0 else None,
+            confidence_range,
+            total_time_elapsed
+        ))
+        
+        conn.commit()
+        print("Debug - Results collection completed successfully")
+        
+    except Exception as e:
+        print(f"Error in results collection middleware: {str(e)}")
+        conn.rollback()
+    finally:
+        conn.close()
+
 init_db()
+init_results_collection()
 
 @app.route("/")
 def home():
@@ -397,20 +550,22 @@ def train_model():
                 non_complete_images = cursor.fetchall()
                 print(f"Debug - Found {len(non_complete_images)} non-complete images")
                 
-                # Get predictions for each non-complete image
-                for (filename,) in non_complete_images:
+                # Extract filenames for batch processing
+                filenames = [row[0] for row in non_complete_images]
+                
+                if filenames:
                     try:
-                        print(f"Debug - Getting predictions for {filename}")
-                        # Get predictions using the appropriate model
+                        print(f"Debug - Getting batch predictions for {len(filenames)} images")
+                        
+                        # Get batch predictions using the appropriate model
                         if model_type == 'yolo':
-                            # Explicitly use the newly trained model
-                            predictions = YOLOModel.predict(filename, use_latest=True)
+                            batch_predictions = YOLOModel.predict_batch(filenames, use_latest=True)
                             column = 'yolo_predictions'
                         else:
-                            predictions = FewShotModelTrainer.predict(filename)
+                            batch_predictions = FewShotModelTrainer.predict_batch(filenames)
                             column = 'one_shot_predictions'
-                            
-                        print(f"Debug - Got {len(predictions)} predictions for {filename}")
+                        
+                        print(f"Debug - Got batch predictions for {len(batch_predictions)} images")
                         
                         # Convert predictions to handle numpy types
                         def convert_numpy_types(obj):
@@ -429,95 +584,89 @@ def train_model():
                                 return obj
                         
                         # Convert all NumPy types to native Python types
-                        predictions = convert_numpy_types(predictions)
+                        batch_predictions = convert_numpy_types(batch_predictions)
                         
-                        # Save predictions
-                        try:
-                            # Check if we can serialize the predictions
-                            json_predictions = json.dumps(predictions)
-                            print(f"Debug - Successfully serialized {len(predictions)} predictions ({len(json_predictions)} bytes)")
-                            
-                            # Log a sample prediction
-                            if len(predictions) > 0:
-                                print(f"Debug - First prediction sample: {json.dumps(predictions[0])}")
-                            
-                            print(f"Debug - Updating {column} for {filename} with {len(predictions)} predictions")
-                            cursor.execute(f'''
-                                UPDATE images 
-                                SET {column} = ?
-                                WHERE filename = ?
-                            ''', (json_predictions, filename))
-                            
-                            # Log row count to see if update was successful
-                            print(f"Debug - Database rows affected: {cursor.rowcount}")
-                            
-                            conn.commit()
-                            
-                            # Verify the update worked
-                            cursor.execute(f"SELECT {column} FROM images WHERE filename = ?", (filename,))
-                            result = cursor.fetchone()
-                            if result and result[0]:
-                                stored_preds = json.loads(result[0])
-                                print(f"Debug - Verified {len(stored_preds)} predictions stored in database for {filename}")
-                            else:
-                                print(f"Debug - WARNING: Failed to store predictions in database for {filename}")
+                        # Save batch predictions to database
+                        successful_updates = 0
+                        for filename, predictions in batch_predictions.items():
+                            try:
+                                # Check if we can serialize the predictions
+                                json_predictions = json.dumps(predictions)
+                                print(f"Debug - Successfully serialized {len(predictions)} predictions for {filename}")
                                 
-                                # Try a direct SELECT to see what might be in the database
-                                cursor.execute(f"SELECT id, filename, {column} FROM images WHERE filename = ?", (filename,))
-                                debug_result = cursor.fetchone()
-                                if debug_result:
-                                    print(f"Debug - Database record: id={debug_result[0]}, filename={debug_result[1]}, has_predictions={bool(debug_result[2])}")
-                                else:
-                                    print(f"Debug - No record found in database for {filename}")
+                                print(f"Debug - Updating {column} for {filename} with {len(predictions)} predictions")
+                                cursor.execute(f'''
+                                    UPDATE images 
+                                    SET {column} = ?
+                                    WHERE filename = ?
+                                ''', (json_predictions, filename))
                                 
-                        except Exception as json_error:
-                            print(f"Debug - Error handling JSON data: {str(json_error)}")
-                            
-                            # Try to sanitize the predictions
-                            sanitized_predictions = []
-                            for pred in predictions:
-                                # Ensure all values are basic Python types
-                                sanitized_pred = {
-                                    'x': float(pred.get('x', 0.0)),
-                                    'y': float(pred.get('y', 0.0)),
-                                    'width': float(pred.get('width', 0.0)),
-                                    'height': float(pred.get('height', 0.0)),
-                                    'label': str(pred.get('label', '')),
-                                    'confidence': float(pred.get('confidence', 0.0)),
-                                    'source': 'ai',
-                                    'isVerified': False
-                                }
-                                sanitized_predictions.append(sanitized_pred)
-                            
-                            # Try serializing again
-                            json_predictions = json.dumps(sanitized_predictions)
-                            print(f"Debug - Successfully serialized sanitized predictions: {len(json_predictions)} bytes")
-                            
-                            # Update with sanitized predictions
-                            cursor.execute(f'''
-                                UPDATE images 
-                                SET {column} = ?
-                                WHERE filename = ?
-                            ''', (json_predictions, filename))
-                            conn.commit()
-                            
-                            print(f"Debug - Stored sanitized predictions in database")
-                            
-                        print(f"Debug - Saved predictions for {filename}")
+                                successful_updates += 1
+                                
+                            except Exception as json_error:
+                                print(f"Debug - Error handling JSON data for {filename}: {str(json_error)}")
+                                
+                                # Try to sanitize the predictions
+                                sanitized_predictions = []
+                                for pred in predictions:
+                                    if model_type == 'few_shot':
+                                        # Few-shot predictions don't have bounding boxes
+                                        sanitized_pred = {
+                                            'label': str(pred.get('label', '')),
+                                            'confidence': float(pred.get('confidence', 0.0)),
+                                            'source': 'ai'
+                                        }
+                                    else:
+                                        # YOLO predictions have bounding boxes
+                                        sanitized_pred = {
+                                            'x': float(pred.get('x', 0.0)),
+                                            'y': float(pred.get('y', 0.0)),
+                                            'width': float(pred.get('width', 0.0)),
+                                            'height': float(pred.get('height', 0.0)),
+                                            'label': str(pred.get('label', '')),
+                                            'confidence': float(pred.get('confidence', 0.0)),
+                                            'source': 'ai',
+                                            'isVerified': False
+                                        }
+                                    sanitized_predictions.append(sanitized_pred)
+                                
+                                # Try serializing again
+                                json_predictions = json.dumps(sanitized_predictions)
+                                print(f"Debug - Successfully serialized sanitized predictions for {filename}")
+                                
+                                # Update with sanitized predictions
+                                cursor.execute(f'''
+                                    UPDATE images 
+                                    SET {column} = ?
+                                    WHERE filename = ?
+                                ''', (json_predictions, filename))
+                                
+                                successful_updates += 1
+                        
+                        # Commit all prediction updates
+                        conn.commit()
+                        print(f"Debug - Successfully updated {successful_updates}/{len(filenames)} images with predictions")
                         
                     except Exception as e:
-                        print(f"Error processing {filename}: {str(e)}")
+                        print(f"Error in batch prediction during training: {str(e)}")
                         import traceback
                         traceback.print_exc()
-                        continue
                 
-                # Update uncertainty scores after training
+                # Update uncertainty scores after training (also use batch processing if both models available)
                 print("Debug - Updating uncertainty scores for all images")
-                for (filename,) in non_complete_images:
-                    try:
-                        # Get predictions from both models
-                        yolo_predictions = YOLOModel.predict(filename)
-                        few_shot_predictions = FewShotModelTrainer.predict(filename)
+                try:
+                    # Check if both models are available for uncertainty calculation
+                    yolo_status = YOLOModel.get_model_status()
+                    few_shot_status = FewShotModelTrainer.get_model_status()
+                    
+                    if (yolo_status['is_available'] and yolo_status.get('is_ready', False) and 
+                        few_shot_status['is_available'] and few_shot_status.get('is_ready', False)):
+                        
+                        print("Debug - Both models available, using batch processing for uncertainty scores")
+                        
+                        # Get batch predictions from both models
+                        yolo_batch_predictions = YOLOModel.predict_batch(filenames)
+                        few_shot_batch_predictions = FewShotModelTrainer.predict_batch(filenames)
                         
                         # Convert NumPy types to native Python types
                         def convert_numpy_types(obj):
@@ -535,24 +684,46 @@ def train_model():
                             else:
                                 return obj
                         
-                        yolo_predictions = convert_numpy_types(yolo_predictions)
-                        few_shot_predictions = convert_numpy_types(few_shot_predictions)
+                        yolo_batch_predictions = convert_numpy_types(yolo_batch_predictions)
+                        few_shot_batch_predictions = convert_numpy_types(few_shot_batch_predictions)
                         
-                        # Calculate uncertainty score
-                        uncertainty_score = calculate_uncertainty_score(yolo_predictions, few_shot_predictions)
+                        # Calculate uncertainty scores for all images
+                        for filename in filenames:
+                            try:
+                                yolo_preds = yolo_batch_predictions.get(filename, [])
+                                few_shot_preds = few_shot_batch_predictions.get(filename, [])
+                                
+                                # Calculate uncertainty score
+                                uncertainty_score = calculate_uncertainty_score(yolo_preds, few_shot_preds)
+                                
+                                # Update uncertainty score in database
+                                cursor.execute('''
+                                    UPDATE images 
+                                    SET uncertainty_score = ?
+                                    WHERE filename = ?
+                                ''', (float(uncertainty_score), filename))
+                                
+                                print(f"Debug - Updated uncertainty score for {filename}: {uncertainty_score}")
+                                
+                            except Exception as e:
+                                print(f"Error calculating uncertainty score for {filename}: {str(e)}")
+                                continue
                         
-                        # Update uncertainty score in database
-                        cursor.execute('''
-                            UPDATE images 
-                            SET uncertainty_score = ?
-                            WHERE filename = ?
-                        ''', (float(uncertainty_score), filename))
+                        # Commit uncertainty score updates
                         conn.commit()
-                        print(f"Debug - Updated uncertainty score for {filename}: {uncertainty_score}")
+                        print("Debug - Successfully updated uncertainty scores using batch processing")
                         
-                    except Exception as e:
-                        print(f"Error updating uncertainty score for {filename}: {str(e)}")
-                        continue
+                    else:
+                        print("Debug - Not both models available, skipping uncertainty score updates")
+                        
+                except Exception as e:
+                    print(f"Error in batch uncertainty score calculation: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                
+                # Call the results collection middleware after training completion
+                print("Debug - Calling results collection middleware after training completion")
+                collect_results_middleware(model_type)
                 
                 conn.close()
                 
@@ -865,6 +1036,181 @@ def predict():
             except:
                 pass
 
+@app.route("/predict_batch", methods=["POST"])
+def predict_batch():
+    """Get predictions for multiple images using the selected model"""
+    data = request.json
+    filenames = data.get('filenames', [])
+    model_type = data.get('model_type', 'yolo')
+    
+    if not filenames:
+        return jsonify({"error": "Filenames list is required"}), 400
+    
+    if not isinstance(filenames, list):
+        return jsonify({"error": "Filenames must be a list"}), 400
+    
+    # Check if model is available or still training
+    if model_type == 'yolo':
+        status = YOLOModel.get_model_status()
+    else:
+        status = FewShotModelTrainer.get_model_status()
+    
+    print(f"Debug - Model status for batch prediction: {status}")
+        
+    if status['training_in_progress']:
+        print(f"Debug - Batch prediction requested for {len(filenames)} images but model is still training")
+        return jsonify({"error": "Model is still training, please wait until training is complete", "status": status}), 400
+        
+    if not status['is_available']:
+        print(f"Debug - Batch prediction requested for {len(filenames)} images but model is not available")
+        return jsonify({"error": "Model is not available. Train a model first.", "status": status}), 400
+    
+    # Check if model is ready
+    if not status.get('is_ready', False):
+        print(f"Debug - Batch prediction requested for {len(filenames)} images but model is not ready yet")
+        
+        # Force model ready if model is available but not ready
+        if status['is_available'] and not status['training_in_progress']:
+            print(f"Debug - Model is available but not ready. Forcing ready state.")
+            if model_type == 'yolo':
+                with YOLOModel.LOCK:
+                    YOLOModel.MODEL_READY = True
+            else:
+                with FewShotModelTrainer.LOCK:
+                    FewShotModelTrainer.MODEL_READY = True
+        else:
+            return jsonify({"error": "Model training has completed but model is not ready yet. Please wait.", "status": status}), 400
+    
+    # Get batch predictions from the selected model
+    print(f"Debug - Getting batch predictions for {len(filenames)} images using {model_type} model")
+    conn = None
+    try:
+        if model_type == 'few_shot':
+            batch_predictions = FewShotModelTrainer.predict_batch(filenames)
+            column = 'one_shot_predictions'
+        else:
+            batch_predictions = YOLOModel.predict_batch(filenames, use_latest=True)
+            column = 'yolo_predictions'
+        
+        if not batch_predictions:
+            print(f"Debug - No predictions returned for batch, model may still be initializing")
+            return jsonify({"predictions": {filename: [] for filename in filenames}, "status": "no_predictions"}), 200
+    
+        # Convert NumPy types to native Python types for JSON serialization
+        def convert_numpy_types(obj):
+            import numpy as np
+            if isinstance(obj, dict):
+                return {k: convert_numpy_types(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_numpy_types(i) for i in obj]
+            elif isinstance(obj, np.integer):
+                return int(obj)
+            elif isinstance(obj, np.floating):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return convert_numpy_types(obj.tolist())
+            else:
+                return obj
+        
+        # Convert all NumPy types to native Python types
+        batch_predictions = convert_numpy_types(batch_predictions)
+        
+        # Log prediction results
+        total_predictions = sum(len(preds) for preds in batch_predictions.values())
+        print(f"Debug - Got {total_predictions} total predictions for {len(filenames)} images")
+        
+        # Store predictions in the database for each image
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
+        
+        successful_updates = 0
+        for filename, predictions in batch_predictions.items():
+            try:
+                # Ensure filename doesn't have path components
+                clean_filename = filename.split('/')[-1]
+                
+                # First verify the image exists in the database
+                c.execute("SELECT id FROM images WHERE filename = ?", (clean_filename,))
+                if not c.fetchone():
+                    print(f"Warning - Image {clean_filename} not found in database, adding it")
+                    c.execute("INSERT INTO images (filename) VALUES (?)", (clean_filename,))
+                
+                # Convert predictions to JSON string
+                try:
+                    json_predictions = json.dumps(predictions)
+                    
+                    # Update predictions in the database
+                    c.execute(f"UPDATE images SET {column} = ? WHERE filename = ?", 
+                             (json_predictions, clean_filename))
+                    successful_updates += 1
+                    
+                except Exception as json_error:
+                    print(f"Debug - Error serializing predictions for {filename}: {str(json_error)}")
+                    # Try to sanitize the predictions
+                    sanitized_predictions = []
+                    for pred in predictions:
+                        if model_type == 'few_shot':
+                            # Few-shot predictions don't have bounding boxes
+                            sanitized_pred = {
+                                'label': str(pred.get('label', '')),
+                                'confidence': float(pred.get('confidence', 0.0)),
+                                'source': 'ai'
+                            }
+                        else:
+                            # YOLO predictions have bounding boxes
+                            sanitized_pred = {
+                                'x': float(pred.get('x', 0.0)),
+                                'y': float(pred.get('y', 0.0)),
+                                'width': float(pred.get('width', 0.0)),
+                                'height': float(pred.get('height', 0.0)),
+                                'label': str(pred.get('label', '')),
+                                'confidence': float(pred.get('confidence', 0.0)),
+                                'source': 'ai',
+                                'isVerified': False
+                            }
+                        sanitized_predictions.append(sanitized_pred)
+                    
+                    # Try serializing again with sanitized data
+                    json_predictions = json.dumps(sanitized_predictions)
+                    c.execute(f"UPDATE images SET {column} = ? WHERE filename = ?", 
+                             (json_predictions, clean_filename))
+                    successful_updates += 1
+                    
+            except Exception as e:
+                print(f"Error storing predictions for {filename}: {str(e)}")
+                continue
+        
+        # Commit all changes
+        conn.commit()
+        print(f"Debug - Successfully updated {successful_updates}/{len(filenames)} images in database")
+        
+        return jsonify({
+            "predictions": batch_predictions, 
+            "status": "success",
+            "processed_count": len(batch_predictions),
+            "total_predictions": total_predictions
+        })
+        
+    except Exception as e:
+        print(f"Error in batch prediction: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        # If we're in a transaction, roll it back
+        if conn:
+            try:
+                conn.rollback()
+            except:
+                pass
+        return jsonify({"error": str(e), "predictions": {filename: [] for filename in filenames}}), 500
+    finally:
+        # Always close the connection
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
 @app.route("/mark_complete", methods=["POST"])
 def mark_complete():
     """Mark an image as fully annotated"""
@@ -1122,12 +1468,12 @@ def get_predictions_with_uncertainty():
         if yolo_status['is_available'] and not yolo_status['training_in_progress']:
             with YOLOModel.LOCK:
                 YOLOModel.MODEL_READY = True
-                print(f"Debug - Forced YOLO model ready state to True")
+            print(f"Debug - Forced YOLO model ready state to True")
                 
         if few_shot_status['is_available'] and not few_shot_status['training_in_progress']:
             with FewShotModelTrainer.LOCK:
                 FewShotModelTrainer.MODEL_READY = True
-                print(f"Debug - Forced FewShot model ready state to True")
+            print(f"Debug - Forced FewShot model ready state to True")
     
     try:
         # Get predictions from both models
@@ -1597,5 +1943,129 @@ def create_dataset_yaml():
     
     return yaml_content
 
+@app.route("/collect_results_settings", methods=["GET", "POST"])
+def collect_results_settings():
+    """Get or update collect results mode settings"""
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    
+    if request.method == "POST":
+        try:
+            data = request.json
+            enabled = data.get('enabled', False)
+            
+            # Save the enabled state
+            c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('collect_results_mode', ?)", 
+                     ('true' if enabled else 'false',))
+            
+            # If enabling for the first time, set the start time
+            if enabled:
+                import time
+                global COLLECT_RESULTS_START_TIME
+                COLLECT_RESULTS_START_TIME = time.time()
+                c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('collect_results_start_time', ?)", 
+                         (str(COLLECT_RESULTS_START_TIME),))
+            
+            conn.commit()
+            
+            return jsonify({"message": "Collect results mode updated successfully", "enabled": enabled})
+            
+        except Exception as e:
+            conn.rollback()
+            return jsonify({"error": str(e)}), 500
+        finally:
+            conn.close()
+    else:  # GET
+        try:
+            # Get the current enabled state
+            c.execute("SELECT value FROM settings WHERE key = 'collect_results_mode'")
+            row = c.fetchone()
+            
+            enabled = row[0] == 'true' if row else False
+                
+            return jsonify({"enabled": enabled})
+            
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        finally:
+            conn.close()
+
+@app.route("/export_results", methods=["GET"])
+def export_results():
+    """Export collected results data"""
+    try:
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
+        
+        # Get all results
+        c.execute('''
+            SELECT 
+                id,
+                timestamp,
+                model_type,
+                total_images_labeled,
+                overall_confidence,
+                time_since_last_training,
+                confidence_range,
+                total_time_elapsed
+            FROM results 
+            ORDER BY timestamp ASC
+        ''')
+        rows = c.fetchall()
+        
+        results = []
+        for row in rows:
+            result = {
+                "id": row[0],
+                "timestamp": row[1],
+                "model_type": row[2],
+                "total_images_labeled": row[3],
+                "overall_confidence": row[4],
+                "time_since_last_training": row[5],
+                "confidence_range": row[6],
+                "total_time_elapsed": row[7]
+            }
+            results.append(result)
+        
+        conn.close()
+        
+        return jsonify({
+            "results": results,
+            "total_records": len(results)
+        })
+        
+    except Exception as e:
+        print(f"Error exporting results: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/clear_results", methods=["POST"])
+def clear_results():
+    """Clear all collected results data"""
+    try:
+        conn = sqlite3.connect(DATABASE)
+        c = conn.cursor()
+        
+        # Clear the results table
+        c.execute("DELETE FROM results")
+        
+        # Reset the start time if collect mode is enabled
+        c.execute("SELECT value FROM settings WHERE key = 'collect_results_mode'")
+        row = c.fetchone()
+        if row and row[0] == 'true':
+            import time
+            global COLLECT_RESULTS_START_TIME
+            COLLECT_RESULTS_START_TIME = time.time()
+            c.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('collect_results_start_time', ?)", 
+                     (str(COLLECT_RESULTS_START_TIME),))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"message": "Results data cleared successfully"})
+        
+    except Exception as e:
+        print(f"Error clearing results: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)

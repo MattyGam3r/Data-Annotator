@@ -10,6 +10,7 @@ import 'http-requests.dart';
 import 'widgets/training_status_widget.dart';
 import 'widgets/augmented_images_viewer.dart';
 import 'widgets/export_status_widget.dart';
+import 'widgets/collect_results_widget.dart';
 
 void main() {
   runApp(const MainApp());
@@ -916,19 +917,23 @@ class _ImageLabellerAreaState extends State<ImageLabellerArea> {
                     // Right side - Frequent Tags panel and Training Status
                     Expanded(
                       flex: 1,
-                      child: Column(
-                        children: [
-                          // Add the training status widget here
-                          TrainingStatusWidget(),
-                          SizedBox(height: 16),
-                          Expanded(
-                            child: FrequentTagsPanel(
+                      child: SingleChildScrollView(
+                        child: Column(
+                          children: [
+                            // Add the training status widget here
+                            TrainingStatusWidget(),
+                            SizedBox(height: 16),
+                            // Add the collect results widget here
+                            CollectResultsWidget(),
+                            SizedBox(height: 16),
+                            // FrequentTagsPanel now handles its own scrolling
+                            FrequentTagsPanel(
                               tagFrequency: widget.tagFrequencies,
                               onTagSelected: widget.onTagSelected,
                               selectedTag: widget.selectedTag,
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ],

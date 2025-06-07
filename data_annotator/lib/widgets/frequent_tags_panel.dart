@@ -35,6 +35,7 @@ class _FrequentTagsPanelState extends State<FrequentTagsPanel> {
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -62,70 +63,78 @@ class _FrequentTagsPanelState extends State<FrequentTagsPanel> {
           if (top10Tags.isEmpty)
             Text("No tags yet. Create some annotations.")
           else
-            Column(
-              children: List.generate(top10Tags.length, (index) {
-                final tag = top10Tags[index];
-                final isSelected = widget.selectedTag == tag.key;
-                
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4.0),
-                  child: InkWell(
-                    onTap: () => widget.onTagSelected(tag.key),
-                    child: Container(
-                      padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: isSelected ? Theme.of(context).colorScheme.primary : Colors.white,
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: Colors.grey.shade300),
+            // Make the tags list scrollable with constrained height
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: 300, // Maximum height before scrolling
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  children: List.generate(top10Tags.length, (index) {
+                    final tag = top10Tags[index];
+                    final isSelected = widget.selectedTag == tag.key;
+                    
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4.0),
+                      child: InkWell(
+                        onTap: () => widget.onTagSelected(tag.key),
+                        child: Container(
+                          padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: isSelected ? Theme.of(context).colorScheme.primary : Colors.white,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: Colors.grey.shade300),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              CircleAvatar(
+                                radius: 10,
+                                backgroundColor: isSelected ? Colors.white : Theme.of(context).colorScheme.primary,
+                                child: Text(
+                                  '${index + 1}',
+                                  style: TextStyle(
+                                    fontSize: 10, 
+                                    color: isSelected ? Theme.of(context).colorScheme.primary : Colors.white,
+                                  ),
+                                ),
+                              ),
+                              SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  tag.key,
+                                  style: TextStyle(
+                                    color: isSelected ? Colors.white : Colors.black,
+                                    fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              SizedBox(width: 8),
+                              Text(
+                                '${tag.value}',
+                                style: TextStyle(
+                                  color: isSelected ? Colors.white70 : Colors.grey,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              if (isSelected)
+                                Padding(
+                                  padding: const EdgeInsets.only(left: 4.0),
+                                  child: Icon(
+                                    Icons.check_circle,
+                                    size: 16,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
                       ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          CircleAvatar(
-                            radius: 10,
-                            backgroundColor: isSelected ? Colors.white : Theme.of(context).colorScheme.primary,
-                            child: Text(
-                              '${index + 1}',
-                              style: TextStyle(
-                                fontSize: 10, 
-                                color: isSelected ? Theme.of(context).colorScheme.primary : Colors.white,
-                              ),
-                            ),
-                          ),
-                          SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              tag.key,
-                              style: TextStyle(
-                                color: isSelected ? Colors.white : Colors.black,
-                                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          SizedBox(width: 8),
-                          Text(
-                            '${tag.value}',
-                            style: TextStyle(
-                              color: isSelected ? Colors.white70 : Colors.grey,
-                              fontSize: 12,
-                            ),
-                          ),
-                          if (isSelected)
-                            Padding(
-                              padding: const EdgeInsets.only(left: 4.0),
-                              child: Icon(
-                                Icons.check_circle,
-                                size: 16,
-                                color: Colors.white,
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-              }),
+                    );
+                  }),
+                ),
+              ),
             ),
           SizedBox(height: 16),
           Text(

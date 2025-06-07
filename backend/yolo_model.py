@@ -38,6 +38,11 @@ if os.path.exists(MODEL_PATH) or os.path.exists('model/training/weights/last.pt'
     logger.info("YOLO model found at startup, setting as ready for predictions")
 
 class YOLOModel:
+    # Add class variables for model caching
+    _cached_model = None
+    _cached_model_path = None
+    _cached_class_map = None
+    
     @staticmethod
     def get_model_status():
         """Return the current model status"""
@@ -361,10 +366,10 @@ class YOLOModel:
             logger.info("Starting model training with memory-efficient settings")
             model.train(
                 data='datasets/dataset.yaml',
-                epochs=50,
+                epochs=20,
                 imgsz=640,
-                batch=12,
-                patience=0,
+                batch=32,
+                patience=5,
                 project='model',
                 name='training',
                 exist_ok=True,
@@ -419,151 +424,176 @@ class YOLOModel:
         return True
     
     @staticmethod
-    def predict(filename, use_latest=True):
-        """Get predictions for an image"""
-        try:
-            # First check if training is in progress or model is not ready 
-            # BEFORE attempting to load model files
-            global TRAINING_IN_PROGRESS, MODEL_READY
+    def _load_model_if_needed(use_latest=True):
+        """Load and cache the model if not already loaded or if path changed"""
+        global TRAINING_IN_PROGRESS, MODEL_READY
+        
+        with LOCK:
+            if TRAINING_IN_PROGRESS or not MODEL_READY:
+                return None, None
+        
+        # Create a list of potential model paths to try
+        model_paths = []
+        
+        if use_latest:
+            model_paths.extend([
+                'model/training/weights/best.pt',
+                'model/best.pt',
+                'model/training/weights/last.pt',
+                'model/last.pt',
+                'yolov8n.pt'
+            ])
+        else:
+            model_paths.extend([
+                'model/best.pt',
+                'model/last.pt',
+                'model/training/weights/best.pt',
+                'model/training/weights/last.pt',
+                'yolov8n.pt'
+            ])
+        
+        # Find the first available model path
+        current_model_path = None
+        for path in model_paths:
+            if os.path.exists(path):
+                file_size = os.path.getsize(path)
+                if file_size >= 10000:  # At least 10KB
+                    current_model_path = path
+                    break
+        
+        if current_model_path is None:
+            logger.error("No valid model weights found")
+            return None, None
+        
+        # Check if we need to reload the model
+        if (YOLOModel._cached_model is None or 
+            YOLOModel._cached_model_path != current_model_path):
             
-            with LOCK:
-                # Skip prediction if model is not ready
-                if TRAINING_IN_PROGRESS:
-                    logger.info("Training in progress, deferring predictions")
-                    return []
-                    
-                if not MODEL_READY:
-                    logger.info("Model not ready, deferring predictions")
-                    return []
-            
-            logger.info(f"Making predictions for {filename} - model is ready")
-            
-            # Only proceed if model is ready
-            # Create a list of potential model paths to try
-            model_paths = []
-            
-            if use_latest:
-                # Try models in order of preference
-                model_paths.extend([
-                    'model/training/weights/best.pt',
-                    'model/best.pt',
-                    'model/training/weights/last.pt',
-                    'model/last.pt',
-                    'yolov8n.pt'  # Fallback to pretrained model if all else fails
-                ])
-            else:
-                model_paths.extend([
-                    'model/best.pt',
-                    'model/last.pt',
-                    'model/training/weights/best.pt',
-                    'model/training/weights/last.pt',
-                    'yolov8n.pt'  # Fallback to pretrained model
-                ])
-            
-            # Try each model path until we find a working one
-            model = None
-            weights_path = None
-            
-            for path in model_paths:
-                if os.path.exists(path):
-                    try:
-                        logger.info(f"Attempting to load model from {path}")
-                        # Check if file size is reasonable (at least 10KB)
-                        file_size = os.path.getsize(path)
-                        if file_size < 10000:  # 10KB
-                            logger.warning(f"Model file too small ({file_size} bytes), likely corrupted: {path}")
-                            continue
-                            
-                        model = YOLO(path)
-                        logger.info(f"Successfully loaded model from {path}")
-                        weights_path = path
-                        break
-                    except Exception as e:
-                        logger.error(f"Failed to load model from {path}: {str(e)}")
-                        # If the file is corrupted, try to rename it
-                        try:
-                            corrupted_path = f"{path}.corrupted"
-                            logger.info(f"Renaming corrupted model file {path} to {corrupted_path}")
-                            os.rename(path, corrupted_path)
-                        except Exception as rename_error:
-                            logger.error(f"Failed to rename corrupted model file: {str(rename_error)}")
-                        continue
-            
-            # Check if we found a working model
-            if model is None:
-                logger.error("Failed to load any model weights, cannot make predictions")
-                return []
-                
-            logger.info(f"Using weights from {weights_path}")
-
-            # Load class mapping
+            try:
+                logger.info(f"Loading/reloading model from {current_model_path}")
+                YOLOModel._cached_model = YOLO(current_model_path)
+                YOLOModel._cached_model_path = current_model_path
+                logger.info(f"Successfully cached model from {current_model_path}")
+            except Exception as e:
+                logger.error(f"Failed to load model from {current_model_path}: {str(e)}")
+                YOLOModel._cached_model = None
+                YOLOModel._cached_model_path = None
+                return None, None
+        
+        # Load class mapping if not cached
+        if YOLOModel._cached_class_map is None:
             try:
                 with open('model/classes.json', 'r') as f:
                     class_map = json.load(f)
-                # Reverse the mapping to get class names from IDs
-                class_names = {idx: name for name, idx in class_map.items()}
-                logger.info(f"Loaded class mapping with {len(class_names)} classes")
+                YOLOModel._cached_class_map = {idx: name for name, idx in class_map.items()}
+                logger.info(f"Cached class mapping with {len(YOLOModel._cached_class_map)} classes")
             except Exception as e:
                 logger.error(f"Error loading class mapping: {str(e)}")
-                return []
+                return None, None
+        
+        return YOLOModel._cached_model, YOLOModel._cached_class_map
 
-            # Get image path
-            img_path = f'uploads/{filename}'
-            if not os.path.exists(img_path):
-                logger.error(f"Image file not found: {img_path}")
-                return []
-                
-            # Get predictions
-            logger.info(f"Running inference on {img_path}")
-            results = model(img_path)
-            predictions = []
+    @staticmethod
+    def predict_batch(filenames, use_latest=True):
+        """Get predictions for multiple images in batch"""
+        try:
+            logger.info(f"Making batch predictions for {len(filenames)} images")
             
-            for r in results:
-                boxes = r.boxes
-                for box in boxes:
-                    x1, y1, x2, y2 = box.xyxy[0].tolist()
-                    conf = float(box.conf[0])
-                    cls = int(box.cls[0])
-                    
-                    # Get class name from mapping
-                    label = class_names.get(cls, f"unknown_{cls}")
-                    logger.info(f"Prediction: class={label}, conf={conf:.2f}, coords=({x1},{y1},{x2},{y2})")
-                    
+            # Load model and class mapping
+            model, class_names = YOLOModel._load_model_if_needed(use_latest)
+            if model is None or class_names is None:
+                logger.warning("Model or class mapping not available for batch prediction")
+                return {filename: [] for filename in filenames}
+            
+            # Prepare image paths and validate they exist
+            valid_images = []
+            valid_filenames = []
+            
+            for filename in filenames:
+                img_path = f'uploads/{filename}'
+                if os.path.exists(img_path):
+                    valid_images.append(img_path)
+                    valid_filenames.append(filename)
+                else:
+                    logger.warning(f"Image file not found: {img_path}")
+            
+            if not valid_images:
+                logger.warning("No valid images found for batch prediction")
+                return {filename: [] for filename in filenames}
+            
+            # Run batch inference
+            logger.info(f"Running batch inference on {len(valid_images)} images")
+            results = model(valid_images)
+            
+            # Process results for each image
+            batch_predictions = {}
+            
+            for i, (filename, result) in enumerate(zip(valid_filenames, results)):
+                predictions = []
+                boxes = result.boxes
+                
+                if boxes is not None:
                     # Load image for dimensions
+                    img_path = f'uploads/{filename}'
                     img = Image.open(img_path)
                     width, height = img.size
                     
-                    # Convert from YOLO's (x1,y1,x2,y2) format to our (x,y,width,height) format
-                    # Ensure we accurately capture the object
-                    x = x1 / width  # Left coordinate normalized
-                    y = y1 / height  # Top coordinate normalized
-                    w = (x2 - x1) / width  # Width normalized
-                    h = (y2 - y1) / height  # Height normalized
-                    
-                    # Debug info to check conversion
-                    logger.info(f"Image dimensions: {width}x{height}")
-                    logger.info(f"Original box: ({x1},{y1},{x2},{y2})")
-                    logger.info(f"Normalized box: x={x:.4f}, y={y:.4f}, w={w:.4f}, h={h:.4f}")
-                    
-                    # Ensure coordinates are within [0,1] range
-                    x = max(0.0, min(0.999, x))
-                    y = max(0.0, min(0.999, y))
-                    w = max(0.001, min(1.0 - x, w))
-                    h = max(0.001, min(1.0 - y, h))
-                    
-                    predictions.append({
-                        'x': x,
-                        'y': y,
-                        'width': w,
-                        'height': h,
-                        'label': label,
-                        'confidence': conf,
-                        'source': 'ai',
-                        'isVerified': False
-                    })
+                    for box in boxes:
+                        x1, y1, x2, y2 = box.xyxy[0].tolist()
+                        conf = float(box.conf[0])
+                        cls = int(box.cls[0])
+                        
+                        # Get class name from mapping
+                        label = class_names.get(cls, f"unknown_{cls}")
+                        
+                        # Convert coordinates to normalized format
+                        x = x1 / width
+                        y = y1 / height
+                        w = (x2 - x1) / width
+                        h = (y2 - y1) / height
+                        
+                        # Ensure coordinates are within [0,1] range
+                        x = max(0.0, min(0.999, x))
+                        y = max(0.0, min(0.999, y))
+                        w = max(0.001, min(1.0 - x, w))
+                        h = max(0.001, min(1.0 - y, h))
+                        
+                        predictions.append({
+                            'x': x,
+                            'y': y,
+                            'width': w,
+                            'height': h,
+                            'label': label,
+                            'confidence': conf,
+                            'source': 'ai',
+                            'isVerified': False
+                        })
+                
+                batch_predictions[filename] = predictions
+                logger.info(f"Generated {len(predictions)} predictions for {filename}")
             
-            logger.info(f"Returning {len(predictions)} predictions")
-            return predictions
+            # Add empty results for files that weren't processed
+            for filename in filenames:
+                if filename not in batch_predictions:
+                    batch_predictions[filename] = []
+            
+            logger.info(f"Batch prediction completed for {len(filenames)} images")
+            return batch_predictions
+            
+        except Exception as e:
+            logger.error(f"Error in batch prediction: {str(e)}", exc_info=True)
+            return {filename: [] for filename in filenames}
+
+    @staticmethod
+    def predict(filename, use_latest=True):
+        """Get predictions for a single image (backwards compatibility)"""
+        try:
+            logger.info(f"Making single prediction for {filename}")
+            
+            # Use batch prediction with single image
+            batch_results = YOLOModel.predict_batch([filename], use_latest)
+            return batch_results.get(filename, [])
+            
         except Exception as e:
             logger.error(f"Error getting predictions: {str(e)}", exc_info=True)
             return []
@@ -574,6 +604,8 @@ class YOLOModel:
         with LOCK:
             MODEL_AVAILABLE = False
             MODEL_READY = False
-        # If you cache the model object in memory, set it to None here
-        # Example: YOLOModel._model = None
-        # (Add any additional in-memory cleanup if needed)
+        # Clear cached model
+        YOLOModel._cached_model = None
+        YOLOModel._cached_model_path = None
+        YOLOModel._cached_class_map = None
+        logger.info("Reset YOLO model and cleared cache")

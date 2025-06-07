@@ -374,4 +374,102 @@ class YoloService {
       return false;
     }
   }
+
+  // Batch prediction for multiple images at once
+  Future<Map<String, List<BoundingBox>>?> predictBatchAnnotations(List<String> imageFilenames) async {
+    // First check if model is available and not training
+    final status = await getTrainingStatus();
+    final modelData = _currentModelType == ModelType.yolo ? status['yolo'] : status['few_shot'];
+    
+    if (modelData['training_in_progress']) {
+      print('Model is currently training. Cannot predict until training is complete.');
+      return null;
+    }
+    
+    if (!modelData['is_available']) {
+      print('Model not available. Train a model first.');
+      return null;
+    }
+
+    try {
+      // Extract just the filenames from URLs
+      List<String> extractedFilenames = imageFilenames.map((filename) => filename.split('/').last).toList();
+      
+      print('Getting batch predictions for ${extractedFilenames.length} images using ${_currentModelType == ModelType.yolo ? "YOLO" : "Few-Shot"} model');
+      
+      final response = await _dio.post(
+        '$baseUrl/predict_batch',
+        data: {
+          'filenames': extractedFilenames,
+          'model_type': _currentModelType == ModelType.yolo ? 'yolo' : 'few_shot',
+        },
+      );
+      
+      if (response.statusCode == 200 && response.data['predictions'] != null) {
+        Map<String, dynamic> batchPredictions = response.data['predictions'];
+        print('Received batch predictions for ${batchPredictions.length} images');
+        print('Total predictions: ${response.data['total_predictions']}');
+        
+        // Convert to Map<String, List<BoundingBox>>
+        Map<String, List<BoundingBox>> result = {};
+        
+        for (String filename in extractedFilenames) {
+          List<dynamic> predictions = batchPredictions[filename] ?? [];
+          
+          List<BoundingBox> boundingBoxes = predictions.map((pred) {
+            // Check if this is a few-shot prediction (label-only format without bounding box coordinates)
+            if (_currentModelType == ModelType.fewShot && 
+                !pred.containsKey('x') && 
+                !pred.containsKey('width')) {
+              // Create a dummy bounding box for display, centered in the image
+              return BoundingBox(
+                x: 0.1, // Small box in the top-left
+                y: 0.1,
+                width: 0.2,
+                height: 0.1,
+                label: "Few-Shot Label: ${pred['label']}",
+                source: AnnotationSource.ai,
+                confidence: pred['confidence'].toDouble(),
+                isVerified: false,
+              );
+            } else {
+              // Normal YOLO-style prediction with coordinates
+              return BoundingBox(
+                x: pred['x'].toDouble(),
+                y: pred['y'].toDouble(),
+                width: pred['width'].toDouble(),
+                height: pred['height'].toDouble(),
+                label: pred['label'],
+                source: AnnotationSource.ai,
+                confidence: pred['confidence'].toDouble(),
+                isVerified: false, // AI predictions are not verified by default
+              );
+            }
+          }).toList();
+          
+          result[filename] = boundingBoxes;
+        }
+        
+        return result;
+      } else {
+        // Handle specific error messages
+        final errorMessage = response.data['error'] as String?;
+        if (errorMessage?.contains('still training') == true) {
+          print('Model is still training: $errorMessage');
+        } else if (errorMessage?.contains('not available') == true) {
+          print('Model not available: $errorMessage');
+        } else {
+          print('Batch prediction error: ${response.data}');
+        }
+      }
+      return null;
+    } on DioException catch (e) {
+      print('Error getting batch predictions: ${e.message}');
+      if (e.response != null) {
+        print('Response data: ${e.response?.data}');
+        print('Response status: ${e.response?.statusCode}');
+      }
+      return null;
+    }
+  }
 }

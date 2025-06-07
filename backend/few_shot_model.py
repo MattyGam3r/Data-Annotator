@@ -95,6 +95,12 @@ class FewShotModel(nn.Module):
         return self.backbone(x)
 
 class FewShotModelTrainer:
+    # Add class variables for model caching
+    _cached_model = None
+    _cached_class_names = None
+    _cached_transform = None
+    _cached_device = None
+
     @staticmethod
     def get_model_status():
         """Return the current model status"""
@@ -135,7 +141,7 @@ class FewShotModelTrainer:
             dataset = FewShotModelTrainer.prepare_data(images_data)
             
             # Create data loader
-            train_loader = DataLoader(dataset, batch_size=8, shuffle=True)
+            train_loader = DataLoader(dataset, batch_size=32, shuffle=True)
             
             # Initialize model
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -145,8 +151,13 @@ class FewShotModelTrainer:
             criterion = nn.BCELoss()
             optimizer = optim.Adam(model.parameters(), lr=0.001)
             
+            # Early stopping parameters
+            best_loss = float('inf')
+            patience = 5
+            patience_counter = 0
+            
             # Training loop
-            num_epochs = 50
+            num_epochs = 20
             for epoch in range(num_epochs):
                 model.train()
                 total_loss = 0
@@ -162,17 +173,38 @@ class FewShotModelTrainer:
                     
                     total_loss += loss.item()
                 
+                avg_loss = total_loss / len(train_loader)
+                
                 # Update progress
                 progress = (epoch + 1) / num_epochs
                 with LOCK:
                     TRAINING_PROGRESS = progress
-                logger.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(train_loader):.4f}")
+                logger.info(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")
+                
+                # Early stopping check
+                if avg_loss < best_loss:
+                    best_loss = avg_loss
+                    patience_counter = 0
+                    # Save best model
+                    torch.save({
+                        'model_state_dict': model.state_dict(),
+                        'class_names': dataset.class_names
+                    }, MODEL_PATH)
+                    logger.info(f"New best loss: {best_loss:.4f}, model saved")
+                else:
+                    patience_counter += 1
+                    logger.info(f"No improvement. Patience: {patience_counter}/{patience}")
+                    
+                    if patience_counter >= patience:
+                        logger.info(f"Early stopping triggered after {epoch+1} epochs")
+                        break
             
-            # Save model
-            torch.save({
-                'model_state_dict': model.state_dict(),
-                'class_names': dataset.class_names
-            }, MODEL_PATH)
+            # Ensure model is saved (in case early stopping didn't trigger)
+            if not os.path.exists(MODEL_PATH):
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'class_names': dataset.class_names
+                }, MODEL_PATH)
             
             with LOCK:
                 TRAINING_IN_PROGRESS = False
@@ -209,26 +241,21 @@ class FewShotModelTrainer:
         return True
     
     @staticmethod
-    def predict(filename):
-        """Make predictions for an image"""
+    def _load_model_if_needed():
+        """Load and cache the model if not already loaded"""
         global MODEL_AVAILABLE, TRAINING_IN_PROGRESS, MODEL_READY
         
-        # Check if training is in progress or model is not ready
-        # Do this before attempting to load model
         with LOCK:
-            if TRAINING_IN_PROGRESS:
-                logger.info("Training in progress, deferring predictions")
-                return []
-            
-            if not MODEL_READY:
-                logger.info("Model not ready, deferring predictions")
-                return []
-            
-            if not MODEL_AVAILABLE:
-                logger.info("Model not available, deferring predictions")
-                return []
+            if TRAINING_IN_PROGRESS or not MODEL_READY or not MODEL_AVAILABLE:
+                return None, None, None, None
         
-        logger.info(f"Making predictions for {filename} - model is ready")
+        # Check if model is already cached
+        if (FewShotModelTrainer._cached_model is not None and 
+            FewShotModelTrainer._cached_class_names is not None):
+            return (FewShotModelTrainer._cached_model, 
+                   FewShotModelTrainer._cached_class_names,
+                   FewShotModelTrainer._cached_transform,
+                   FewShotModelTrainer._cached_device)
         
         try:
             # Load model and class mapping
@@ -241,52 +268,136 @@ class FewShotModelTrainer:
             model.load_state_dict(checkpoint['model_state_dict'])
             model.eval()
             
-            # Load and preprocess image
-            img_path = os.path.join('uploads', filename)
-            if not os.path.exists(img_path):
-                return []
-            
+            # Create transform
             transform = transforms.Compose([
                 transforms.Resize((224, 224)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             ])
             
-            image = Image.open(img_path).convert('RGB')
-            image_tensor = transform(image).unsqueeze(0).to(device)
+            # Cache everything
+            FewShotModelTrainer._cached_model = model
+            FewShotModelTrainer._cached_class_names = class_names
+            FewShotModelTrainer._cached_transform = transform
+            FewShotModelTrainer._cached_device = device
             
-            # Get predictions
-            with torch.no_grad():
-                outputs = model(image_tensor)
-                predictions = outputs[0].cpu().numpy()
+            logger.info(f"Successfully cached FewShot model with {len(class_names)} classes")
+            return model, class_names, transform, device
             
-            # Convert predictions to class labels with confidence
-            results = []
-            for i, (class_name, confidence) in enumerate(zip(class_names, predictions)):
-                if confidence > 0.5:  # Confidence threshold
-                    logger.info(f"Prediction: class={class_name}, conf={confidence:.2f}")
-                    
-                    # Add the class prediction without bounding box information
-                    results.append({
-                        'label': class_name,
-                        'confidence': float(confidence),
-                        'source': 'ai',
-                    })
-            
-            return results
         except Exception as e:
-            logger.error(f"Error making predictions: {str(e)}", exc_info=True)
+            logger.error(f"Error loading FewShot model: {str(e)}", exc_info=True)
+            return None, None, None, None
+
+    @staticmethod
+    def predict_batch(filenames):
+        """Make predictions for multiple images"""
+        try:
+            logger.info(f"Making batch predictions for {len(filenames)} FewShot images")
+            
+            # Load model components
+            model, class_names, transform, device = FewShotModelTrainer._load_model_if_needed()
+            if model is None:
+                logger.warning("FewShot model not available for batch prediction")
+                return {filename: [] for filename in filenames}
+            
+            batch_predictions = {}
+            
+            # Process images in batches for memory efficiency
+            batch_size = 16  # Adjust based on GPU memory
+            
+            for i in range(0, len(filenames), batch_size):
+                batch_filenames = filenames[i:i+batch_size]
+                
+                # Prepare batch of images
+                batch_images = []
+                valid_filenames = []
+                
+                for filename in batch_filenames:
+                    img_path = os.path.join('uploads', filename)
+                    if os.path.exists(img_path):
+                        try:
+                            image = Image.open(img_path).convert('RGB')
+                            image_tensor = transform(image)
+                            batch_images.append(image_tensor)
+                            valid_filenames.append(filename)
+                        except Exception as e:
+                            logger.error(f"Error processing image {filename}: {str(e)}")
+                            batch_predictions[filename] = []
+                    else:
+                        logger.warning(f"Image file not found: {img_path}")
+                        batch_predictions[filename] = []
+                
+                if not batch_images:
+                    # No valid images in this batch
+                    for filename in batch_filenames:
+                        if filename not in batch_predictions:
+                            batch_predictions[filename] = []
+                    continue
+                
+                # Stack images into a batch tensor
+                batch_tensor = torch.stack(batch_images).to(device)
+                
+                # Get batch predictions
+                with torch.no_grad():
+                    batch_outputs = model(batch_tensor)
+                    batch_predictions_np = batch_outputs.cpu().numpy()
+                
+                # Process results for each image in the batch
+                for j, filename in enumerate(valid_filenames):
+                    predictions = batch_predictions_np[j]
+                    results = []
+                    
+                    for k, (class_name, confidence) in enumerate(zip(class_names, predictions)):
+                        if confidence > 0.5:  # Confidence threshold
+                            logger.info(f"FewShot prediction for {filename}: class={class_name}, conf={confidence:.2f}")
+                            
+                            results.append({
+                                'label': class_name,
+                                'confidence': float(confidence),
+                                'source': 'ai',
+                            })
+                    
+                    batch_predictions[filename] = results
+                    logger.info(f"Generated {len(results)} FewShot predictions for {filename}")
+            
+            # Ensure all requested filenames have results
+            for filename in filenames:
+                if filename not in batch_predictions:
+                    batch_predictions[filename] = []
+            
+            logger.info(f"FewShot batch prediction completed for {len(filenames)} images")
+            return batch_predictions
+            
+        except Exception as e:
+            logger.error(f"Error in FewShot batch prediction: {str(e)}", exc_info=True)
+            return {filename: [] for filename in filenames}
+
+    @staticmethod
+    def predict(filename):
+        """Make predictions for an image (backwards compatibility)"""
+        try:
+            logger.info(f"Making single FewShot prediction for {filename}")
+            
+            # Use batch prediction with single image
+            batch_results = FewShotModelTrainer.predict_batch([filename])
+            return batch_results.get(filename, [])
+            
+        except Exception as e:
+            logger.error(f"Error making FewShot predictions: {str(e)}", exc_info=True)
             return []
-    
+
     @staticmethod
     def reset():
         global MODEL_AVAILABLE, MODEL_READY
         with LOCK:
             MODEL_AVAILABLE = False
             MODEL_READY = False
-        # If you cache the model object in memory, set it to None here
-        # Example: FewShotModelTrainer._model = None
-        # (Add any additional in-memory cleanup if needed)
+        # Clear cached model
+        FewShotModelTrainer._cached_model = None
+        FewShotModelTrainer._cached_class_names = None
+        FewShotModelTrainer._cached_transform = None
+        FewShotModelTrainer._cached_device = None
+        logger.info("Reset FewShot model and cleared cache")
 
 # Initialize the model flags at startup
 if os.path.exists(MODEL_PATH):
