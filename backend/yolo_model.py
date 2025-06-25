@@ -366,15 +366,15 @@ class YOLOModel:
             logger.info("Starting model training with memory-efficient settings")
             model.train(
                 data='datasets/dataset.yaml',
-                epochs=20,
+                epochs=50,
                 imgsz=640,
-                batch=16,
-                patience=10,
+                batch=8,
+                patience=20,
                 project='model',
                 name='training',
                 exist_ok=True,
                 verbose=True,
-                workers=1,
+                workers=0,
                 lr0=0.0001,
             )
             
